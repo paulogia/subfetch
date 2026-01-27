@@ -1,0 +1,37 @@
+# zsh
+# Get the file path from either $1 (argument) or Hazel's string substitution.
+# Hazel shows "Use $1 to refer to the file being processed." In some setups
+# it does literal substitution (not argv). We handle both.
+fpath="$1"
+if [ -z "$fpath" ]; then
+  # If Hazel substituted $1 directly into the script body, capture it using
+  # a placeholder variable. (Tip: leave the next line exactly as-is.)
+  fpath="$1"
+fi
+
+# Log to Hazel log so we know it ran (shows in Hazel > Preferences > Trash > Open Log…)
+echo "Hazel processing: $fpath" >&2
+
+# Hand the path to Python via an env var and also as argv (covers both cases)
+/usr/bin/env HAZEL_FILE="$fpath" /usr/bin/python3 - "$fpath" <<'PY'
+import os, sys, re, pathlib
+
+# Try argv first; fall back to env
+candidate = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else os.environ.get("HAZEL_FILE", "")
+if not candidate:
+    raise SystemExit("No input path from Hazel.")
+
+p = pathlib.Path(candidate)
+
+# Read bytes; normalize line endings to LF
+s = p.read_bytes().replace(b'\r\n', b'\n').replace(b'\r', b'\n')
+
+# 1) collapse extra blank lines (your "\r+ -> \r" intent, now on LF)
+s = re.sub(br'\n+', b'\n', s)
+
+# 2) number line + timestamp line -> "HH:MM:SS "
+#    If you want milliseconds, change (\d{2}:\d{2}:\d{2}) to (\d{2}:\d{2}:\d{2},\d{3})
+s = re.sub(br'^\d+\n(\d{2}:\d{2}:\d{2}).*\n', br'\1 ', s, flags=re.M)
+
+p.write_bytes(s)
+PY
