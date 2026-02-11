@@ -250,11 +250,14 @@ subfetch run
 # Only process 50 videos from each channel
 subfetch run --max-videos 50
 
+# Stop after 400 videos total (prevents rate limiting)
+subfetch run --max-total 400
+
 # Only sync one specific channel
 subfetch run --channel "@veritasium"
 
-# Combine options
-subfetch run --channel "@3blue1brown" --max-videos 100
+# Combine options for rate-limited large channels
+subfetch run --max-total 400 --delay 5.0
 ```
 
 **What happens:**
@@ -495,15 +498,103 @@ Then `subfetch` will work directly.
 - Run `subfetch run` again later to catch videos that get captions added
 
 ### Videos show captions on YouTube but not in subfetch
-Some videos require authentication to access captions via the API, even if they're publicly viewable in a browser. This includes:
+
+This issue has multiple causes:
+
+**1. Rate Limiting (Most Common for Large Channels)**
+
+When processing hundreds or thousands of videos, YouTube may start blocking subtitle metadata requests. You'll see many videos marked as "missing captions" even though they have them.
+
+**Symptoms:**
+- First ~200-500 videos download fine, then most fail
+- Debug mode shows `Available subtitles: []` and `Available automatic: []`
+- Same videos work when tested individually
+
+**Solutions:**
+- **Set a total video limit** (prevents hitting rate limits):
+  ```bash
+  # Stop after 400 videos total
+  subfetch run --max-total 400
+  # Run again after 30-60 minutes to continue
+  subfetch run --max-total 400
+  # Repeat until all videos processed
+  ```
+
+- **Use cookies** (helps bypass rate limits):
+  ```bash
+  subfetch config-cookies ~/youtube-cookies.txt
+  subfetch run --channel "@channelname"
+  ```
+
+- **Increase delay between videos**:
+  ```bash
+  subfetch run --channel "@channelname" --delay 5.0
+  # or even longer for very aggressive rate limiting
+  subfetch run --channel "@channelname" --delay 10.0
+  ```
+
+- **Combine strategies** (most effective):
+  ```bash
+  # Use cookies + limit + delay
+  subfetch run --max-total 400 --delay 5.0 --cookies ~/youtube-cookies.txt
+  ```
+
+**2. Authentication Required**
+
+Some videos require authentication to access captions via the API, even if they're publicly viewable in a browser:
 - Age-restricted videos (18+)
 - Members-only content
 - Some videos where YouTube blocks API access
 
-**Solution:** Use a cookies file:
-1. Export your browser cookies (see `subfetch config-cookies` above)
-2. Set as default: `subfetch config-cookies ~/youtube-cookies.txt`
-3. Or use for one command: `subfetch run --cookies ~/youtube-cookies.txt`
+**Solution:** Use a cookies file (see above)
+
+### Debug Mode
+
+If videos are being marked as "missing captions" but you believe they should have English captions, enable debug mode to see detailed error information:
+
+```bash
+export SUBFETCH_DEBUG=1
+subfetch run --channel "@channelname" --max-videos 5
+```
+
+This will show:
+- Which step is failing (video info extraction, subtitle detection, or download)
+- Available subtitle languages for each video
+- Detailed error messages from yt-dlp
+
+To disable debug mode:
+```bash
+unset SUBFETCH_DEBUG
+```
+
+**Common issues revealed by debug mode:**
+- Rate limiting from YouTube (wait 30-60 minutes and try again)
+- Network timeouts (retry later or reduce `--max-videos`)
+- Missing cookies for restricted content (use `--cookies`)
+
+### Automatic Rate Limiting Detection
+
+subfetch automatically detects when YouTube is rate limiting you and stops early to avoid wasting your quota:
+
+**How it works:**
+- After 10 consecutive "missing captions" (all with empty subtitle lists), subfetch assumes you're rate limited and stops
+- You'll see: `⚠ Rate limiting detected (10 consecutive failures). Stopping channel sync.`
+- This prevents burning through your `--max-total` budget on failed requests
+
+**To adjust sensitivity:**
+```bash
+# More aggressive (stop after 5 failures)
+subfetch run --max-consecutive-failures 5
+
+# Less aggressive (stop after 20 failures)
+subfetch run --max-consecutive-failures 20
+```
+
+**What to do when rate limited:**
+1. Wait 30-60 minutes (or longer for severe limiting)
+2. Try using cookies: `subfetch config-cookies ~/youtube-cookies.txt`
+3. Use longer delays: `subfetch run --delay 5.0`
+4. For channels with 1000+ videos, you may need to wait 12-24 hours after hitting rate limits
 
 ## Future Updates
 

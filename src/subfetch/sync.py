@@ -26,6 +26,7 @@ class SyncProgress:
     skipped: int
     missing_captions: int
     errors: int
+    rate_limited: bool = False  # True if stopped due to rate limiting detection
 
 
 @dataclass
@@ -42,15 +43,25 @@ class SyncResult:
 class ChannelSynchronizer:
     """Synchronize subtitles for tracked channels."""
 
-    def __init__(self, config: ArchiveConfig, cookies_file: Optional[Path] = None):
+    def __init__(
+        self,
+        config: ArchiveConfig,
+        cookies_file: Optional[Path] = None,
+        cookies_from_browser: Optional[str] = None,
+    ):
         self.config = config
         self.enumerator = ChannelEnumerator()
-        self.extractor = SubtitleExtractor(cookies_file=cookies_file)
+        self.extractor = SubtitleExtractor(
+            cookies_file=cookies_file,
+            cookies_from_browser=cookies_from_browser,
+        )
 
     def sync_all_channels(
         self,
         max_videos: Optional[int] = None,
-        progress_callback: Optional[Callable[[str, VideoInfo, str], None]] = None
+        progress_callback: Optional[Callable[[str, VideoInfo, str], None]] = None,
+        delay: float = 2.5,
+        max_consecutive_failures: int = 10
     ) -> SyncResult:
         """
         Sync all tracked channels.
@@ -75,7 +86,9 @@ class ChannelSynchronizer:
             progress = self.sync_channel(
                 channel_config.channel_id,
                 max_videos=max_videos,
-                progress_callback=progress_callback
+                progress_callback=progress_callback,
+                delay=delay,
+                max_consecutive_failures=max_consecutive_failures
             )
 
             result.channels_processed += 1
@@ -91,7 +104,9 @@ class ChannelSynchronizer:
         self,
         channel_id: str,
         max_videos: Optional[int] = None,
-        progress_callback: Optional[Callable[[str, VideoInfo, str], None]] = None
+        progress_callback: Optional[Callable[[str, VideoInfo, str], None]] = None,
+        delay: float = 2.5,
+        max_consecutive_failures: int = 10
     ) -> SyncProgress:
         """
         Sync single channel by ID.
@@ -101,6 +116,8 @@ class ChannelSynchronizer:
             max_videos: Optional limit on videos to process
             progress_callback: Called with (channel_title, video, status) for each video
                               status is 'downloaded', 'skipped', 'missing_captions', or 'error'
+            delay: Seconds to wait between videos
+            max_consecutive_failures: Stop after this many consecutive missing captions (likely rate limiting)
 
         Returns:
             SyncProgress with channel statistics
@@ -140,6 +157,7 @@ class ChannelSynchronizer:
         )
 
         videos_added = 0
+        consecutive_failures = 0
 
         # Enumerate and process videos
         for video in self.enumerator.enumerate(channel_id, max_videos=max_videos):
@@ -148,6 +166,7 @@ class ChannelSynchronizer:
             # Check if already downloaded
             if self._should_skip_video(channel_folder, video.video_id):
                 progress.skipped += 1
+                consecutive_failures = 0  # Reset on skip
                 if progress_callback:
                     progress_callback(channel_config.channel_title, video, 'skipped')
                 continue
@@ -159,6 +178,7 @@ class ChannelSynchronizer:
                 if result.success:
                     progress.downloaded += 1
                     videos_added += 1
+                    consecutive_failures = 0  # Reset on success
                     if progress_callback:
                         progress_callback(channel_config.channel_title, video, 'downloaded')
 
@@ -176,16 +196,23 @@ class ChannelSynchronizer:
                 else:
                     # No captions available
                     progress.missing_captions += 1
+                    consecutive_failures += 1
                     if progress_callback:
                         progress_callback(channel_config.channel_title, video, 'missing_captions')
 
+                    # Check if we've hit too many consecutive failures (likely rate limiting)
+                    if consecutive_failures >= max_consecutive_failures:
+                        progress.rate_limited = True
+                        break
+
             except Exception as e:
                 progress.errors += 1
+                consecutive_failures = 0  # Don't count errors as rate limiting
                 if progress_callback:
                     progress_callback(channel_config.channel_title, video, 'error')
 
             # Conservative delay between downloads to avoid rate limiting
-            time.sleep(2.5)
+            time.sleep(delay)
 
         # Update metadata
         if videos_added > 0:

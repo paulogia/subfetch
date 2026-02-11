@@ -6,7 +6,7 @@ import click
 
 from . import __version__
 from .channel import ChannelEnumerator
-from .config import ConfigManager, UserConfigManager, resolve_root, resolve_cookies
+from .config import ConfigManager, UserConfigManager, resolve_root, resolve_cookies, resolve_cookies_from_browser
 from .extractor import SubtitleExtractor
 from .metadata import MetadataManager
 from .sync import ChannelSynchronizer
@@ -32,7 +32,13 @@ def main():
     type=click.Path(exists=True),
     help='Path to cookies.txt file for authentication'
 )
-def video(video_url: str, output: str, cookies: str):
+@click.option(
+    '--browser',
+    type=click.Choice(['chrome', 'firefox', 'safari', 'edge', 'chromium']),
+    default=None,
+    help='Browser to extract cookies from (alternative to --cookies)'
+)
+def video(video_url: str, output: str, cookies: str, browser: str):
     """Download subtitles for a single video.
 
     Example: subfetch video "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
@@ -41,7 +47,8 @@ def video(video_url: str, output: str, cookies: str):
     output_path.mkdir(parents=True, exist_ok=True)
 
     cookies_path = resolve_cookies(cookies)
-    extractor = SubtitleExtractor(output_path, cookies_file=cookies_path)
+    browser_source = resolve_cookies_from_browser(browser)
+    extractor = SubtitleExtractor(output_path, cookies_file=cookies_path, cookies_from_browser=browser_source)
 
     click.echo(f"Extracting subtitles from: {video_url}")
     result = extractor.extract(video_url)
@@ -195,6 +202,29 @@ def config_cookies(cookies_file: str):
     click.echo()
     click.echo("This cookies file will now be used automatically for all operations.")
     click.echo("You can override it with --cookies for individual commands.")
+
+
+@main.command('config-cookies-browser')
+@click.argument('browser', type=click.Choice(['chrome', 'firefox', 'safari', 'edge', 'chromium']))
+def config_cookies_browser(browser: str):
+    """Set default browser to extract cookies from automatically.
+
+    Reads cookies directly from the browser's profile, which often works
+    better than an exported cookies.txt for YouTube PO token authentication.
+
+    Examples:
+
+      subfetch config-cookies-browser chrome
+
+      subfetch config-cookies-browser firefox
+    """
+    UserConfigManager.set_default_cookies_from_browser(browser)
+    click.echo(click.style("Default browser for cookies configured!", fg='green'))
+    click.echo(f"  Browser: {browser}")
+    click.echo(f"  Stored in: ~/.subfetch_config")
+    click.echo()
+    click.echo("Cookies will now be read from this browser for all operations.")
+    click.echo("You can override it with --browser for individual commands.")
 
 
 @main.command()
@@ -358,15 +388,21 @@ def list_channels(root: str):
 @main.command()
 @click.option('--root', type=click.Path(), default=None, help='Archive root directory')
 @click.option('--max-videos', '-n', type=int, help='Limit videos processed per channel')
+@click.option('--max-total', type=int, help='Limit total videos processed across all channels (recommended: 400)')
 @click.option('--channel', '-c', help='Process only specific channel (ID, @handle, or folder name)')
 @click.option('--cookies', type=click.Path(exists=True), help='Path to cookies.txt file for authentication')
-def run(root: str, max_videos: int, channel: str, cookies: str):
+@click.option('--browser', type=click.Choice(['chrome', 'firefox', 'safari', 'edge', 'chromium']), default=None, help='Browser to extract cookies from (alternative to --cookies)')
+@click.option('--delay', type=float, default=2.5, help='Seconds to wait between videos (default: 2.5, try 5-10 if rate limited)')
+@click.option('--max-consecutive-failures', type=int, default=10, help='Stop after N consecutive missing captions (rate limit detection, default: 10)')
+def run(root: str, max_videos: int, max_total: int, channel: str, cookies: str, browser: str, delay: float, max_consecutive_failures: int):
     """Download subtitles for all tracked channels.
 
     Examples:
       subfetch run                    # Sync all channels
       subfetch run --max-videos 100   # Limit to 100 videos per channel
+      subfetch run --max-total 400    # Stop after 400 videos total (prevents rate limiting)
       subfetch run --channel @3blue1brown  # Sync only one channel
+      subfetch run --delay 5.0        # Increase delay to avoid rate limits
     """
     try:
         root_path = resolve_root(root)
@@ -414,7 +450,8 @@ def run(root: str, max_videos: int, channel: str, cookies: str):
 
     # Run sync
     cookies_path = resolve_cookies(cookies)
-    synchronizer = ChannelSynchronizer(config, cookies_file=cookies_path)
+    browser_source = resolve_cookies_from_browser(browser)
+    synchronizer = ChannelSynchronizer(config, cookies_file=cookies_path, cookies_from_browser=browser_source)
 
     # Accumulate totals
     total_downloaded = 0
@@ -422,21 +459,49 @@ def run(root: str, max_videos: int, channel: str, cookies: str):
     total_missing = 0
     total_errors = 0
     total_processed = 0
+    limit_reached = False
 
     for idx, channel_config in enumerate(channels_to_sync, 1):
+        # Check if we've hit the global limit
+        if max_total and total_processed >= max_total:
+            limit_reached = True
+            click.echo()
+            click.echo(click.style(f"⚠ Reached total video limit ({max_total}). Stopping.", fg='yellow', bold=True))
+            click.echo(f"Processed {idx - 1} of {len(channels_to_sync)} channels.")
+            break
+
         click.echo()
         click.echo(click.style(f"Syncing: {channel_config.channel_title} [{idx}/{len(channels_to_sync)}]", fg='cyan', bold=True))
         click.echo("-" * 80)
 
+        # Calculate remaining budget for this channel
+        remaining = None
+        if max_total:
+            remaining = max_total - total_processed
+            # Use the smaller of max_videos or remaining budget
+            if max_videos:
+                effective_max = min(max_videos, remaining)
+            else:
+                effective_max = remaining
+        else:
+            effective_max = max_videos
+
         progress = synchronizer.sync_channel(
             channel_config.channel_id,
-            max_videos=max_videos,
-            progress_callback=progress_callback
+            max_videos=effective_max,
+            progress_callback=progress_callback,
+            delay=delay,
+            max_consecutive_failures=max_consecutive_failures
         )
 
         click.echo()
-        click.echo(f"Channel complete: {progress.downloaded} downloaded, {progress.skipped} skipped, "
-                   f"{progress.missing_captions} missing captions, {progress.errors} errors")
+        if progress.rate_limited:
+            click.echo(click.style(f"⚠ Rate limiting detected ({max_consecutive_failures} consecutive failures). Stopping channel sync.", fg='red', bold=True))
+            click.echo(f"Channel progress: {progress.downloaded} downloaded, {progress.skipped} skipped, "
+                       f"{progress.missing_captions} missing captions, {progress.errors} errors")
+        else:
+            click.echo(f"Channel complete: {progress.downloaded} downloaded, {progress.skipped} skipped, "
+                       f"{progress.missing_captions} missing captions, {progress.errors} errors")
 
         # Accumulate totals
         total_downloaded += progress.downloaded
@@ -445,17 +510,173 @@ def run(root: str, max_videos: int, channel: str, cookies: str):
         total_errors += progress.errors
         total_processed += progress.processed
 
+        # If rate limited, stop processing other channels too
+        if progress.rate_limited:
+            click.echo()
+            click.echo(click.style("⚠ YouTube is rate limiting subtitle requests.", fg='yellow', bold=True))
+            click.echo("Wait 30-60 minutes (or longer) before trying again.")
+            click.echo("Consider using --cookies and --delay options.")
+            limit_reached = True  # Reuse this flag to show stopped message
+            break
+
     # Final summary
     if len(channels_to_sync) > 1:
         click.echo()
-        click.echo(click.style("=== Sync Complete ===", fg='green', bold=True))
+        if limit_reached:
+            click.echo(click.style("=== Sync Stopped (Limit Reached) ===", fg='yellow', bold=True))
+        else:
+            click.echo(click.style("=== Sync Complete ===", fg='green', bold=True))
         click.echo(f"Channels: {len(channels_to_sync)}")
         click.echo(f"Videos processed: {total_processed}")
+        if max_total:
+            click.echo(f"  (limit: {max_total})")
         click.echo(f"  {click.style('✓', fg='green')} Downloaded: {total_downloaded}")
         click.echo(f"  {click.style('⊘', fg='blue')} Skipped: {total_skipped}")
         click.echo(f"  {click.style('✗', fg='yellow')} Missing captions: {total_missing}")
         if total_errors > 0:
             click.echo(f"  {click.style('⚠', fg='red')} Errors: {total_errors}")
+        if limit_reached:
+            click.echo()
+            click.echo("Run again to continue processing remaining videos.")
+    elif limit_reached:
+        click.echo()
+        click.echo(click.style(f"⚠ Stopped after {total_processed} videos (limit: {max_total})", fg='yellow'))
+        click.echo("Run again to continue processing.")
+
+
+@main.command('inspect-video')
+@click.argument('video')
+@click.option(
+    '--cookies',
+    type=click.Path(exists=True),
+    help='Path to cookies.txt file for authentication'
+)
+@click.option(
+    '--browser',
+    type=click.Choice(['chrome', 'firefox', 'safari', 'edge', 'chromium']),
+    default=None,
+    help='Browser to extract cookies from (alternative to --cookies)'
+)
+@click.option(
+    '--json', 'output_json', is_flag=True, default=False,
+    help='Output raw JSON of subtitle info'
+)
+def inspect_video(video: str, cookies: str, browser: str, output_json: bool):
+    """Inspect subtitle metadata for a single video without downloading.
+
+    VIDEO can be a full YouTube URL or a bare video ID.
+
+    Prints exactly what yt-dlp sees for subtitles and what subfetch
+    would select, bypassing all download logic. Useful for diagnosing
+    why a video is reported as missing captions.
+
+    Examples:
+
+      subfetch inspect-video 4t4nL4E5074
+
+      subfetch inspect-video "https://www.youtube.com/watch?v=4t4nL4E5074"
+
+      subfetch inspect-video 4t4nL4E5074 --json
+    """
+    import json as json_mod
+
+    import yt_dlp
+
+    url = video if video.startswith('http') else f'https://www.youtube.com/watch?v={video}'
+
+    cookies_path = resolve_cookies(cookies)
+    browser_source = resolve_cookies_from_browser(browser)
+
+    # Use download=False with the ios player client. The ios player API JSON is
+    # fetched during info extraction regardless of download mode, and it includes
+    # full caption track data — so automatic_captions will be populated without
+    # needing to go through format selection (which fails due to PO token).
+    ydl_opts: dict = {
+        'quiet': False,         # show yt-dlp progress/warnings for diagnosis
+        'no_warnings': False,
+        'ignoreerrors': True,
+        'extractor_args': {
+            'youtube': {'player_client': ['ios']},
+        },
+    }
+    if cookies_path and cookies_path.exists():
+        ydl_opts['cookiefile'] = str(cookies_path)
+    elif browser_source:
+        ydl_opts['cookiesfrombrowser'] = (browser_source,)
+
+    click.echo(f"Fetching metadata for: {url}")
+    click.echo()
+
+    info = None
+    try:
+        # process=False: return raw info dict without running process_ie_result,
+        # which would trigger format selection and fail (all ios formats need PO token).
+        # The ios player API JSON is still fetched in _real_extract, so
+        # automatic_captions is populated with subtitle URLs.
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False, process=False)
+    except Exception as e:
+        click.echo(click.style(f"Warning: yt-dlp raised an exception ({e})", fg='yellow'))
+
+    if info is None:
+        click.echo(click.style("yt-dlp returned no info for this video.", fg='red'))
+        raise SystemExit(1)
+
+    subtitles = info.get('subtitles', {})
+    automatic_captions = info.get('automatic_captions', {})
+
+    if output_json:
+        click.echo(json_mod.dumps({
+            'id': info.get('id'),
+            'title': info.get('title'),
+            'subtitles': {k: [{'ext': t.get('ext')} for t in v] if isinstance(v, list) else v
+                         for k, v in subtitles.items()},
+            'automatic_captions': {k: [{'ext': t.get('ext')} for t in v] if isinstance(v, list) else v
+                                   for k, v in automatic_captions.items()},
+        }, indent=2))
+        return
+
+    click.echo()
+    click.echo(click.style(f"Video ID : {info.get('id', 'unknown')}", bold=True))
+    click.echo(click.style(f"Title    : {info.get('title', 'unknown')}", bold=True))
+    click.echo()
+
+    def _show_tracks(label: str, color: str, track_dict: dict) -> None:
+        if track_dict:
+            click.echo(click.style(f"{label}:", fg=color, bold=True))
+            for lang_key, tracks in track_dict.items():
+                fmts = [t.get('ext', '?') for t in tracks] if isinstance(tracks, list) else []
+                click.echo(f"  {lang_key!r:24s} {fmts}")
+        else:
+            click.echo(click.style(f"{label}: (none)", fg='yellow'))
+
+    _show_tracks("Uploaded subtitles", 'green', subtitles)
+    click.echo()
+    _show_tracks("Automatic captions", 'cyan', automatic_captions)
+    click.echo()
+
+    from .extractor import SubtitleExtractor
+    from .models import SubtitleType
+
+    subtitles_info = {'subtitles': subtitles, 'automatic_captions': automatic_captions}
+    extractor = SubtitleExtractor.__new__(SubtitleExtractor)
+    sub_type, lang_code, is_auto = extractor._select_best_subtitle(subtitles_info)
+
+    if sub_type is not None:
+        click.echo(click.style(
+            f"subfetch would select: type={sub_type.value!r}, lang={lang_code!r}, is_auto={is_auto}",
+            fg='green', bold=True
+        ))
+    else:
+        click.echo(click.style("subfetch would report: No English subtitles available", fg='red', bold=True))
+        en_subs = [k for k in subtitles if k.lower().startswith('en')]
+        en_auto = [k for k in automatic_captions if k.lower().startswith('en')]
+        if en_subs or en_auto:
+            click.echo(click.style("NOTE: 'en*' keys present but not matched:", fg='yellow'))
+            if en_subs:
+                click.echo(f"  subtitles: {en_subs}")
+            if en_auto:
+                click.echo(f"  automatic_captions: {en_auto}")
 
 
 if __name__ == '__main__':

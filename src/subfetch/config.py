@@ -332,6 +332,41 @@ class UserConfigManager:
             json.dump(data, f, indent=2)
 
     @staticmethod
+    def get_default_cookies_from_browser() -> Optional[str]:
+        """Get the default browser name for cookies extraction from user config."""
+        config_path = UserConfigManager.get_user_config_path()
+
+        if not config_path.exists():
+            return None
+
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return data.get('default_cookies_from_browser')
+        except (json.JSONDecodeError, OSError):
+            pass
+
+        return None
+
+    @staticmethod
+    def set_default_cookies_from_browser(browser: str):
+        """Set the default browser for cookies extraction in user config."""
+        config_path = UserConfigManager.get_user_config_path()
+
+        data = {}
+        if config_path.exists():
+            try:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        data['default_cookies_from_browser'] = browser
+
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2)
+
+    @staticmethod
     def clear_default_root():
         """Clear the default archive root from user config."""
         config_path = UserConfigManager.get_user_config_path()
@@ -400,3 +435,18 @@ def resolve_cookies(cookies_arg: Optional[str]) -> Optional[Path]:
 
     # No cookies found
     return None
+
+
+def resolve_cookies_from_browser(browser_arg: Optional[str]) -> Optional[str]:
+    """
+    Resolve the browser name for cookies extraction using priority order:
+    1. Explicit --browser argument (if provided)
+    2. Default browser from ~/.subfetch_config
+    3. Return None if not found
+
+    Returns the browser name (e.g. 'chrome', 'firefox') or None.
+    """
+    if browser_arg:
+        return browser_arg
+
+    return UserConfigManager.get_default_cookies_from_browser()
