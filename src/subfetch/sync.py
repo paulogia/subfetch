@@ -38,6 +38,7 @@ class SyncResult:
     skipped: int
     missing_captions: int
     errors: int
+    rate_limited: bool = False  # True if stopped early due to rate limiting
 
 
 class ChannelSynchronizer:
@@ -97,6 +98,10 @@ class ChannelSynchronizer:
             result.skipped += progress.skipped
             result.missing_captions += progress.missing_captions
             result.errors += progress.errors
+
+            if progress.rate_limited:
+                result.rate_limited = True
+                break
 
         return result
 
@@ -158,9 +163,11 @@ class ChannelSynchronizer:
 
         videos_added = 0
         consecutive_failures = 0
+        new_videos_attempted = 0  # Count of non-skipped videos attempted
 
-        # Enumerate and process videos
-        for video in self.enumerator.enumerate(channel_id, max_videos=max_videos):
+        # Enumerate and process videos (no max_videos cap on enumeration;
+        # max_videos limits how many *new* videos we attempt, not how many we scan)
+        for video in self.enumerator.enumerate(channel_id):
             progress.processed += 1
 
             # Check if already downloaded
@@ -170,6 +177,12 @@ class ChannelSynchronizer:
                 if progress_callback:
                     progress_callback(channel_config.channel_title, video, 'skipped')
                 continue
+
+            # Stop once we've attempted enough new videos
+            if max_videos is not None and new_videos_attempted >= max_videos:
+                break
+
+            new_videos_attempted += 1
 
             # Attempt download
             try:

@@ -44,10 +44,10 @@ def find_subtitle_by_video_id(folder: Path, video_id: str) -> Optional[Path]:
     Returns the first matching file, or None if not found.
     """
     # Can't use glob with [...] as it's interpreted as character class
-    # Instead, list all .srt files and check if video_id is in filename
-    for srt_file in folder.glob('*.srt'):
-        if f'[{video_id}]' in srt_file.name:
-            return srt_file
+    # Check both .txt (current format) and .srt (legacy format)
+    for f in folder.iterdir():
+        if f.suffix in ('.txt', '.srt') and f'[{video_id}]' in f.name:
+            return f
     return None
 
 
