@@ -12,7 +12,7 @@ from .utils import sanitize_filename
 class CumulativeManager:
     """Manages cumulative transcript files for a channel."""
 
-    MAX_SIZE_BYTES = 10 * 1024 * 1024  # 10MB
+    MAX_SIZE_BYTES = 2 * 1024 * 1024  # 2MB
     SEPARATOR = "=" * 80 + "\n"
 
     @staticmethod
@@ -109,6 +109,32 @@ class CumulativeManager:
         return max(cumulative_files, key=lambda x: x[1])
 
     @staticmethod
+    def find_all_cumulatives(channel_folder: Path, channel_title: str) -> List[Path]:
+        """
+        Find all cumulative files for a channel, sorted by number.
+
+        Args:
+            channel_folder: Path to channel's folder
+            channel_title: Sanitized channel title
+
+        Returns:
+            List of paths to cumulative files in numerical order (001, 002, 003, etc.)
+        """
+        pattern = f"{channel_title}-*.txt"
+        cumulative_files = []
+
+        for file in channel_folder.glob(pattern):
+            # Extract number using regex: ChannelName-001.txt
+            match = re.search(r'-(\d{3})\.txt$', file.name)
+            if match:
+                number = int(match.group(1))
+                cumulative_files.append((file, number))
+
+        # Sort by number and return paths only
+        cumulative_files.sort(key=lambda x: x[1])
+        return [f[0] for f in cumulative_files]
+
+    @staticmethod
     def would_exceed_limit(file_path: Path, content_to_append: str) -> bool:
         """
         Check if appending content would exceed 10MB limit.
@@ -150,3 +176,39 @@ class CumulativeManager:
         # Create empty file if it doesn't exist
         file_path.touch(exist_ok=True)
         return file_path
+
+    @staticmethod
+    def rebuild_channel(channel_folder: Path, channel_title: str) -> int:
+        """
+        Rebuild cumulative files for a channel from scratch using the current size limit.
+
+        Deletes all existing cumulative files for the channel, then re-creates them
+        from the individual per-video subtitle files in date order.
+
+        Args:
+            channel_folder: Path to channel's folder
+            channel_title: Display name for the channel
+
+        Returns:
+            Number of individual transcript files processed
+        """
+        safe_title = sanitize_filename(channel_title, max_length=80)
+
+        # Collect individual subtitle files — identified by [VIDEO_ID] in the name
+        individual_files = sorted(
+            f for f in channel_folder.glob('*.txt')
+            if re.search(r'\[.+\]\.txt$', f.name)
+        )
+
+        # Delete all existing cumulative files for this channel
+        for f in channel_folder.glob(f"{safe_title}-*.txt"):
+            if re.search(r'-\d{3}\.txt$', f.name):
+                f.unlink()
+
+        if not individual_files:
+            return 0
+
+        # Re-build from scratch — append_transcripts handles splitting at MAX_SIZE_BYTES
+        CumulativeManager.append_transcripts(channel_folder, channel_title, individual_files)
+
+        return len(individual_files)

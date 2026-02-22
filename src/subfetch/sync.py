@@ -10,7 +10,7 @@ from typing import Callable, Optional
 from .channel import ChannelEnumerator
 from .config import ArchiveConfig, ChannelConfig
 from .extractor import SubtitleExtractor
-from .metadata import MetadataManager
+from .metadata import MetadataManager, NoSubtitlesTracker
 from .models import VideoInfo
 from .utils import find_subtitle_by_video_id
 
@@ -27,6 +27,8 @@ class SyncProgress:
     missing_captions: int
     errors: int
     rate_limited: bool = False  # True if stopped due to rate limiting detection
+    skipped_no_subtitles: int = 0  # Videos skipped because confirmed no subtitles
+    total_channel_videos: int = 0  # Total videos in channel (0 if unknown)
 
 
 @dataclass
@@ -39,6 +41,7 @@ class SyncResult:
     missing_captions: int
     errors: int
     rate_limited: bool = False  # True if stopped early due to rate limiting
+    skipped_no_subtitles: int = 0  # Videos skipped because confirmed no subtitles
 
 
 class ChannelSynchronizer:
@@ -98,6 +101,7 @@ class ChannelSynchronizer:
             result.skipped += progress.skipped
             result.missing_captions += progress.missing_captions
             result.errors += progress.errors
+            result.skipped_no_subtitles += progress.skipped_no_subtitles
 
             if progress.rate_limited:
                 result.rate_limited = True
@@ -111,7 +115,8 @@ class ChannelSynchronizer:
         max_videos: Optional[int] = None,
         progress_callback: Optional[Callable[[str, VideoInfo, str], None]] = None,
         delay: float = 2.5,
-        max_consecutive_failures: int = 10
+        max_consecutive_failures: int = 10,
+        no_sub_threshold: int = 2
     ) -> SyncProgress:
         """
         Sync single channel by ID.
@@ -122,7 +127,8 @@ class ChannelSynchronizer:
             progress_callback: Called with (channel_title, video, status) for each video
                               status is 'downloaded', 'skipped', 'missing_captions', or 'error'
             delay: Seconds to wait between videos
-            max_consecutive_failures: Stop after this many consecutive missing captions (likely rate limiting)
+            max_consecutive_failures: Stop after this many consecutive missing captions or errors (likely rate limiting)
+            no_sub_threshold: Skip permanently after this many confirmed no-subtitle results (default 2)
 
         Returns:
             SyncProgress with channel statistics
@@ -165,9 +171,12 @@ class ChannelSynchronizer:
         consecutive_failures = 0
         new_videos_attempted = 0  # Count of non-skipped videos attempted
 
+        def _on_total(n: int) -> None:
+            progress.total_channel_videos = n
+
         # Enumerate and process videos (no max_videos cap on enumeration;
         # max_videos limits how many *new* videos we attempt, not how many we scan)
-        for video in self.enumerator.enumerate(channel_id):
+        for video in self.enumerator.enumerate(channel_id, on_total=_on_total):
             progress.processed += 1
 
             # Check if already downloaded
@@ -176,6 +185,14 @@ class ChannelSynchronizer:
                 consecutive_failures = 0  # Reset on skip
                 if progress_callback:
                     progress_callback(channel_config.channel_title, video, 'skipped')
+                continue
+
+            # Check if confirmed no subtitles (persistent across runs)
+            if NoSubtitlesTracker.should_skip(video.video_id, channel_folder, threshold=no_sub_threshold):
+                progress.skipped_no_subtitles += 1
+                consecutive_failures = 0
+                if progress_callback:
+                    progress_callback(channel_config.channel_title, video, 'skipped_no_subtitles')
                 continue
 
             # Stop once we've attempted enough new videos
@@ -206,10 +223,11 @@ class ChannelSynchronizer:
                     except Exception:
                         # Don't fail download if cumulative append fails
                         pass
-                else:
-                    # No captions available
+                elif result.error == "No English subtitles available":
+                    # Permanent: yt-dlp confirmed no English tracks exist
                     progress.missing_captions += 1
                     consecutive_failures += 1
+                    NoSubtitlesTracker.record_attempt(video.video_id, channel_folder)
                     if progress_callback:
                         progress_callback(channel_config.channel_title, video, 'missing_captions')
 
@@ -218,11 +236,27 @@ class ChannelSynchronizer:
                         progress.rate_limited = True
                         break
 
+                else:
+                    # Transient error — treat same as missing captions for stop heuristic
+                    # since we can't reliably distinguish rate limiting from other failures
+                    progress.errors += 1
+                    consecutive_failures += 1
+                    if progress_callback:
+                        progress_callback(channel_config.channel_title, video, 'error')
+
+                    if consecutive_failures >= max_consecutive_failures:
+                        progress.rate_limited = True
+                        break
+
             except Exception as e:
                 progress.errors += 1
-                consecutive_failures = 0  # Don't count errors as rate limiting
+                consecutive_failures += 1
                 if progress_callback:
                     progress_callback(channel_config.channel_title, video, 'error')
+
+                if consecutive_failures >= max_consecutive_failures:
+                    progress.rate_limited = True
+                    break
 
             # Conservative delay between downloads to avoid rate limiting
             time.sleep(delay)

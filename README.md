@@ -241,6 +241,7 @@ subfetch run
 - `--channel <channel>` or `-c <channel>` - Only sync one specific channel
 - `--root <path>` - Use a different archive folder
 - `--cookies <path>` - Use a cookies file for age-restricted or members-only content
+- `--update-links` - Update compilation hard links after sync completes
 
 **Examples:**
 ```bash
@@ -269,6 +270,76 @@ subfetch run --max-total 400 --delay 5.0
   - ⊘ (blue) = Already have it, skipped
   - ✗ (yellow) = No English captions available
   - ⚠ (red) = Error occurred
+
+---
+
+### `subfetch update-links`
+
+Create a master folder with hard links to all cumulative compilation files.
+
+This command creates a `_compilations/` folder in your archive root that contains hard links to all `ChannelName-NNN.txt` cumulative files across all channels. This makes it easy to:
+- Access all compilation files in one place
+- Sort by date modified in Finder to see recently updated channels
+- Quickly identify which channels have new content since your last manual copy
+
+**Note:** Hard links share the exact same modification time as the original files (they're literally the same file with two names). When you sort by "Date Modified" in the `_compilations/` folder, you'll see which channels have been updated most recently.
+
+**Basic usage:**
+```bash
+subfetch update-links
+```
+
+**Options:**
+- `--clean` - Remove all existing links and rebuild from scratch
+- `--root <path>` - Use a different archive folder
+
+**Examples:**
+```bash
+# Update hard links (safe to run multiple times)
+subfetch update-links
+
+# Clean rebuild (remove all and recreate)
+subfetch update-links --clean
+
+# Update links for specific archive
+subfetch update-links --root ~/work-research
+```
+
+**What happens:**
+- Creates `_compilations/` folder if it doesn't exist
+- Creates hard links to all `ChannelName-NNN.txt` files
+- Removes stale links (for deleted channels/files)
+- Skips creating links that already exist and are valid
+- Shows summary of created/removed links
+
+---
+
+### `subfetch config-auto-links [on|off]`
+
+Enable or disable automatic hard link updates after each sync.
+
+When enabled, `subfetch run` will automatically update the compilation hard links at the end of each sync, so you don't have to manually run `subfetch update-links`.
+
+**Examples:**
+```bash
+# Enable automatic updates
+subfetch config-auto-links on
+
+# Disable automatic updates
+subfetch config-auto-links off
+```
+
+**Options:**
+- `--root <path>` - Use a different archive folder
+
+**What happens:**
+- Saves the preference in your archive config
+- When enabled: `subfetch run` automatically updates hard links at the end
+- When disabled: You must manually run `subfetch update-links` to update links
+
+**Use case:**
+- Enable if you want hard links always up-to-date without extra commands
+- Disable if you prefer manual control or don't use the links feature
 
 ---
 
@@ -349,6 +420,11 @@ Subtitles are organized like this:
 ```
 ~/youtube-subtitles/
 ├── .subfetch_config.json          (tracking info - don't edit)
+├── _compilations/                 (hard links to all cumulative files - optional)
+│   ├── 3Blue1Brown-001.txt        (hard link, same modification date as original)
+│   ├── 3Blue1Brown-002.txt
+│   ├── Veritasium-001.txt
+│   └── ...
 ├── 3Blue1Brown/
 │   ├── .channel_metadata.json     (channel info)
 │   ├── 3Blue1Brown-001.txt        (cumulative file)
@@ -361,6 +437,8 @@ Subtitles are organized like this:
     ├── 2024-01-10 - Physics explained [ghi789].txt
     └── ...
 ```
+
+**Note:** The `_compilations/` folder is only created if you run `subfetch update-links` or enable auto-update with `subfetch config-auto-links on`. Files in `_compilations/` are hard links (not copies) - they share the same modification date as the originals, making it easy to sort by "Date Modified" to see recently updated channels.
 
 Each subtitle file:
 - Has the video ID in brackets at the end (so it's always unique)

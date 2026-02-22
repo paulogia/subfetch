@@ -28,6 +28,8 @@ class ArchiveConfig:
     version: str
     root_path: str
     channels: dict[str, ChannelConfig]  # channel_id -> ChannelConfig
+    compilations_folder: str = "_compilations"  # Folder for symlinks
+    auto_update_links: bool = False  # Auto-update symlinks after sync
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
@@ -37,7 +39,9 @@ class ArchiveConfig:
             'channels': {
                 channel_id: asdict(channel_config)
                 for channel_id, channel_config in self.channels.items()
-            }
+            },
+            'compilations_folder': self.compilations_folder,
+            'auto_update_links': self.auto_update_links
         }
 
     @staticmethod
@@ -50,7 +54,9 @@ class ArchiveConfig:
         return ArchiveConfig(
             version=data.get('version', '1.0'),
             root_path=data['root_path'],
-            channels=channels
+            channels=channels,
+            compilations_folder=data.get('compilations_folder', '_compilations'),
+            auto_update_links=data.get('auto_update_links', False)
         )
 
 

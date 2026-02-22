@@ -100,3 +100,50 @@ class MetadataManager:
 
         with open(metadata_path, 'w', encoding='utf-8') as f:
             json.dump(asdict(metadata), f, indent=2, ensure_ascii=False)
+
+
+class NoSubtitlesTracker:
+    """
+    Track videos confirmed to have no English subtitles.
+
+    Persists a per-channel .no_subtitles.json file mapping video IDs to
+    the number of times a 'No English subtitles available' result was seen.
+    Once the count reaches the threshold, _should_skip_video skips the video
+    permanently without making an API call.
+    """
+
+    @staticmethod
+    def _get_path(channel_folder: Path) -> Path:
+        return channel_folder / '.no_subtitles.json'
+
+    @staticmethod
+    def _load(channel_folder: Path) -> dict:
+        path = NoSubtitlesTracker._get_path(channel_folder)
+        if not path.exists():
+            return {}
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return {}
+
+    @staticmethod
+    def _save(channel_folder: Path, data: dict) -> None:
+        path = NoSubtitlesTracker._get_path(channel_folder)
+        channel_folder.mkdir(parents=True, exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+    @staticmethod
+    def record_attempt(video_id: str, channel_folder: Path) -> int:
+        """Increment no-subtitle attempt count. Returns new count."""
+        data = NoSubtitlesTracker._load(channel_folder)
+        data[video_id] = data.get(video_id, 0) + 1
+        NoSubtitlesTracker._save(channel_folder, data)
+        return data[video_id]
+
+    @staticmethod
+    def should_skip(video_id: str, channel_folder: Path, threshold: int = 2) -> bool:
+        """Return True if this video has reached the no-subtitle threshold."""
+        data = NoSubtitlesTracker._load(channel_folder)
+        return data.get(video_id, 0) >= threshold

@@ -1,6 +1,6 @@
 """Channel video enumeration using yt-dlp."""
 
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 
 import yt_dlp
 
@@ -19,13 +19,20 @@ class ChannelEnumerator:
             'skip_download': True,
         }
 
-    def enumerate(self, channel_identifier: str, max_videos: Optional[int] = None) -> Iterator[VideoInfo]:
+    def enumerate(
+        self,
+        channel_identifier: str,
+        max_videos: Optional[int] = None,
+        on_total: Optional[Callable[[int], None]] = None,
+    ) -> Iterator[VideoInfo]:
         """
         Enumerate all public videos from a channel.
 
         Args:
             channel_identifier: Channel URL, @handle, or channel ID
             max_videos: Optional limit on number of videos to return
+            on_total: Optional callback called with the total video count before
+                      the first video is yielded (no extra API call required)
 
         Yields:
             VideoInfo for each video found
@@ -40,6 +47,8 @@ class ChannelEnumerator:
                     return
 
                 entries = info.get('entries', [])
+                if on_total is not None:
+                    on_total(len(entries))
                 channel_id = info.get('channel_id')
                 channel_title = info.get('channel')
 

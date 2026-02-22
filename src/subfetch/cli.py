@@ -10,6 +10,7 @@ from .config import ConfigManager, UserConfigManager, resolve_root, resolve_cook
 from .extractor import SubtitleExtractor
 from .metadata import MetadataManager
 from .sync import ChannelSynchronizer
+from .symlinks import SymlinkManager
 
 
 @click.group()
@@ -393,8 +394,10 @@ def list_channels(root: str):
 @click.option('--cookies', type=click.Path(exists=True), help='Path to cookies.txt file for authentication')
 @click.option('--browser', type=click.Choice(['chrome', 'firefox', 'safari', 'edge', 'chromium']), default=None, help='Browser to extract cookies from (alternative to --cookies)')
 @click.option('--delay', type=float, default=2.5, help='Seconds to wait between videos (default: 2.5, try 5-10 if rate limited)')
-@click.option('--max-consecutive-failures', type=int, default=10, help='Stop after N consecutive missing captions (rate limit detection, default: 10)')
-def run(root: str, max_videos: int, max_total: int, channel: str, cookies: str, browser: str, delay: float, max_consecutive_failures: int):
+@click.option('--max-consecutive-failures', type=int, default=10, help='Stop after N consecutive missing captions or errors (rate limit detection, default: 10)')
+@click.option('--no-sub-threshold', type=int, default=2, help='Skip video permanently after N confirmed no-subtitle results (default: 2)')
+@click.option('--update-links', is_flag=True, help='Update compilation symlinks after sync completes')
+def run(root: str, max_videos: int, max_total: int, channel: str, cookies: str, browser: str, delay: float, max_consecutive_failures: int, no_sub_threshold: int, update_links: bool):
     """Download subtitles for all tracked channels.
 
     Examples:
@@ -440,6 +443,8 @@ def run(root: str, max_videos: int, max_total: int, channel: str, cookies: str, 
             symbol = click.style("✓", fg='green')
         elif status == 'skipped':
             symbol = click.style("⊘", fg='blue')
+        elif status == 'skipped_no_subtitles':
+            symbol = click.style("⊘", fg='bright_black')
         elif status == 'missing_captions':
             symbol = click.style("✗", fg='yellow')
         else:  # error
@@ -456,9 +461,11 @@ def run(root: str, max_videos: int, max_total: int, channel: str, cookies: str, 
     # Accumulate totals
     total_downloaded = 0
     total_skipped = 0
+    total_skipped_no_subtitles = 0
     total_missing = 0
     total_errors = 0
     total_processed = 0
+    total_channel_videos_sum = 0
     limit_reached = False
 
     for idx, channel_config in enumerate(channels_to_sync, 1):
@@ -491,24 +498,51 @@ def run(root: str, max_videos: int, max_total: int, channel: str, cookies: str, 
             max_videos=effective_max,
             progress_callback=progress_callback,
             delay=delay,
-            max_consecutive_failures=max_consecutive_failures
+            max_consecutive_failures=max_consecutive_failures,
+            no_sub_threshold=no_sub_threshold,
         )
 
         click.echo()
+        def _channel_summary_line(p) -> str:
+            parts = [
+                f"{p.downloaded} downloaded",
+                f"{p.skipped} skipped",
+            ]
+            if p.skipped_no_subtitles:
+                parts.append(f"{p.skipped_no_subtitles} no-subtitles")
+            parts += [f"{p.missing_captions} missing captions", f"{p.errors} errors"]
+            return ", ".join(parts)
+
         if progress.rate_limited:
-            click.echo(click.style(f"⚠ Rate limiting detected ({max_consecutive_failures} consecutive failures). Stopping channel sync.", fg='red', bold=True))
-            click.echo(f"Channel progress: {progress.downloaded} downloaded, {progress.skipped} skipped, "
-                       f"{progress.missing_captions} missing captions, {progress.errors} errors")
+            click.echo(click.style(f"⚠ Stopped after {max_consecutive_failures} consecutive failures (rate limiting or errors). Stopping channel sync.", fg='red', bold=True))
+            click.echo(f"Channel progress: {_channel_summary_line(progress)}")
         else:
-            click.echo(f"Channel complete: {progress.downloaded} downloaded, {progress.skipped} skipped, "
-                       f"{progress.missing_captions} missing captions, {progress.errors} errors")
+            click.echo(f"Channel complete: {_channel_summary_line(progress)}")
+
+        # Completeness indicator
+        ch_has = progress.downloaded + progress.skipped
+        ch_total = progress.total_channel_videos or progress.processed
+        ch_not_seen = ch_total - progress.processed
+        ch_pending = progress.missing_captions + progress.errors
+        ch_addressable = ch_total - progress.skipped_no_subtitles
+        if ch_addressable > 0:
+            ch_pct = ch_has / ch_addressable * 100
+            pct_str = click.style(f"{ch_pct:.0f}%", fg='green' if ch_pct >= 95 else 'yellow')
+            parts = [f"{ch_has}/{ch_addressable} addressable videos have subtitles ({pct_str})"]
+            if ch_not_seen > 0:
+                parts.append(f"{ch_not_seen} not yet seen")
+            if ch_pending > 0:
+                parts.append(f"{ch_pending} pending retry")
+            click.echo(f"  → {', '.join(parts)}")
 
         # Accumulate totals
         total_downloaded += progress.downloaded
         total_skipped += progress.skipped
+        total_skipped_no_subtitles += progress.skipped_no_subtitles
         total_missing += progress.missing_captions
         total_errors += progress.errors
         total_processed += progress.processed
+        total_channel_videos_sum += progress.total_channel_videos or progress.processed
 
         # If rate limited, stop processing other channels too
         if progress.rate_limited:
@@ -531,10 +565,24 @@ def run(root: str, max_videos: int, max_total: int, channel: str, cookies: str, 
         if max_total:
             click.echo(f"  (limit: {max_total})")
         click.echo(f"  {click.style('✓', fg='green')} Downloaded: {total_downloaded}")
-        click.echo(f"  {click.style('⊘', fg='blue')} Skipped: {total_skipped}")
+        click.echo(f"  {click.style('⊘', fg='blue')} Skipped (already downloaded): {total_skipped}")
+        if total_skipped_no_subtitles > 0:
+            click.echo(f"  {click.style('⊘', fg='bright_black')} Skipped (no subtitles): {total_skipped_no_subtitles}")
         click.echo(f"  {click.style('✗', fg='yellow')} Missing captions: {total_missing}")
         if total_errors > 0:
             click.echo(f"  {click.style('⚠', fg='red')} Errors: {total_errors}")
+        total_has = total_downloaded + total_skipped
+        total_addressable = total_processed - total_skipped_no_subtitles
+        total_pending = total_missing + total_errors
+        if total_addressable > 0:
+            total_pct = total_has / total_addressable * 100
+            pct_color = 'green' if total_pct >= 95 else 'yellow'
+            click.echo(f"Subtitle coverage: {total_has}/{total_addressable} ({click.style(f'{total_pct:.1f}%', fg=pct_color)})")
+        if total_pending > 0:
+            click.echo(f"Pending retry next run: {total_pending}")
+        # Track not-yet-seen across channels
+        if total_channel_videos_sum > total_processed:
+            click.echo(f"Not yet seen: {total_channel_videos_sum - total_processed}")
         if limit_reached:
             click.echo()
             click.echo("Run again to continue processing remaining videos.")
@@ -542,6 +590,80 @@ def run(root: str, max_videos: int, max_total: int, channel: str, cookies: str, 
         click.echo()
         click.echo(click.style(f"⚠ Stopped after {total_processed} videos (limit: {max_total})", fg='yellow'))
         click.echo("Run again to continue processing.")
+
+    # Update hard links if requested or enabled in config
+    if update_links or config.auto_update_links:
+        click.echo()
+        click.echo(click.style("Updating compilation links...", fg='cyan'))
+        created, removed, errors = SymlinkManager.update_links(config, verbose=False)
+
+        if created > 0 or removed > 0:
+            click.echo(f"  {click.style('✓', fg='green')} Created: {created} hard links")
+            if removed > 0:
+                click.echo(f"  {click.style('⊘', fg='blue')} Removed: {removed} stale links")
+            if errors > 0:
+                click.echo(f"  {click.style('⚠', fg='yellow')} Errors: {errors}")
+        else:
+            click.echo(f"  {click.style('✓', fg='green')} All links up to date")
+
+
+@main.command('rebuild-transcripts')
+@click.option('--root', type=click.Path(), default=None, help='Archive root directory')
+@click.option('--channel', '-c', help='Rebuild only specific channel (ID, @handle, or folder name)')
+def rebuild_transcripts(root: str, channel: str):
+    """Rebuild cumulative transcript files from individual subtitle files.
+
+    Deletes all existing channel-NNN.txt files and recreates them from the
+    individual per-video subtitle files, using the current size limit.
+
+    Useful after changing the size limit, or to fix any inconsistencies.
+
+    Examples:
+      subfetch rebuild-transcripts
+      subfetch rebuild-transcripts --channel @3blue1brown
+    """
+    from .cumulative import CumulativeManager
+
+    try:
+        root_path = resolve_root(root)
+    except FileNotFoundError as e:
+        click.echo(click.style(f"Error: {e}", fg='red'))
+        raise SystemExit(1)
+
+    try:
+        config = ConfigManager.load_archive(root_path)
+    except FileNotFoundError as e:
+        click.echo(click.style(f"Error: {e}", fg='red'))
+        raise SystemExit(1)
+
+    channels_to_rebuild = list(config.channels.values())
+    if channel:
+        found = ConfigManager.find_channel(config, channel)
+        if found:
+            channels_to_rebuild = [found]
+        else:
+            click.echo(click.style(f"Error: Channel not found: {channel}", fg='red'))
+            raise SystemExit(1)
+
+    limit_mb = CumulativeManager.MAX_SIZE_BYTES // (1024 * 1024)
+    click.echo(f"Rebuilding cumulative transcripts (limit: {limit_mb}MB per file)")
+    click.echo()
+
+    total_files = 0
+    for channel_config in channels_to_rebuild:
+        folder_path = root_path / channel_config.folder_name
+        if not folder_path.exists():
+            click.echo(f"  {channel_config.channel_title}: folder not found, skipping")
+            continue
+
+        click.echo(f"  {channel_config.channel_title}...", nl=False)
+        count = CumulativeManager.rebuild_channel(folder_path, channel_config.channel_title)
+        total_files += count
+        click.echo(click.style(f" {count} files", fg='green'))
+
+    click.echo()
+    click.echo(click.style("Done.", fg='green'))
+    click.echo(f"Processed {total_files} subtitle files across {len(channels_to_rebuild)} channel(s).")
 
 
 @main.command('inspect-video')
@@ -677,6 +799,98 @@ def inspect_video(video: str, cookies: str, browser: str, output_json: bool):
                 click.echo(f"  subtitles: {en_subs}")
             if en_auto:
                 click.echo(f"  automatic_captions: {en_auto}")
+
+
+@main.command('update-links')
+@click.option('--root', type=click.Path(), default=None, help='Archive root directory')
+@click.option('--clean', is_flag=True, help='Remove all links and recreate from scratch')
+def update_links(root: str, clean: bool):
+    """Update hard links to cumulative compilation files.
+
+    Creates a master folder (_compilations/) with hard links to all channel
+    compilation files. Safe to run multiple times - only creates/updates
+    what's needed.
+
+    Hard links share the same modification date as the original files,
+    making it easy to identify recently updated channels by sorting by
+    "Date Modified" in Finder.
+
+    Examples:
+      subfetch update-links
+      subfetch update-links --clean
+    """
+    try:
+        root_path = resolve_root(root)
+    except FileNotFoundError as e:
+        click.echo(click.style(f"Error: {e}", fg='red'))
+        raise SystemExit(1)
+
+    try:
+        config = ConfigManager.load_archive(root_path)
+    except FileNotFoundError as e:
+        click.echo(click.style(f"Error: {e}", fg='red'))
+        raise SystemExit(1)
+
+    if not config.channels:
+        click.echo("No channels tracked yet.")
+        click.echo("Add channels with: subfetch add <channel>")
+        return
+
+    click.echo(click.style("Updating compilation links...", fg='cyan'))
+
+    created, removed, errors = SymlinkManager.update_links(config, clean=clean, verbose=True)
+
+    click.echo()
+    if clean:
+        click.echo(click.style("Clean rebuild complete!", fg='green'))
+    else:
+        click.echo(click.style("Update complete!", fg='green'))
+
+    click.echo(f"  Created: {created} hard links")
+    if removed > 0:
+        click.echo(f"  Removed: {removed} stale links")
+    if errors > 0:
+        click.echo(f"  Errors: {errors}")
+
+    compilations_folder = SymlinkManager.get_compilations_folder(config)
+    click.echo()
+    click.echo(f"Links location: {compilations_folder}")
+
+
+@main.command('config-auto-links')
+@click.option('--root', type=click.Path(), default=None, help='Archive root directory')
+@click.argument('enabled', type=click.Choice(['on', 'off']))
+def config_auto_links(root: str, enabled: str):
+    """Enable or disable automatic link updates after sync.
+
+    When enabled, 'subfetch run' will automatically update compilation
+    hard links after completing the sync.
+
+    Examples:
+      subfetch config-auto-links on
+      subfetch config-auto-links off
+    """
+    try:
+        root_path = resolve_root(root)
+    except FileNotFoundError as e:
+        click.echo(click.style(f"Error: {e}", fg='red'))
+        raise SystemExit(1)
+
+    try:
+        config = ConfigManager.load_archive(root_path)
+    except FileNotFoundError as e:
+        click.echo(click.style(f"Error: {e}", fg='red'))
+        raise SystemExit(1)
+
+    config.auto_update_links = (enabled == 'on')
+    ConfigManager.save_archive(config)
+
+    if config.auto_update_links:
+        click.echo(click.style("✓ Auto-update enabled!", fg='green'))
+        click.echo("Hard links will be updated automatically after 'subfetch run'")
+    else:
+        click.echo(click.style("✓ Auto-update disabled", fg='blue'))
+        click.echo("Use 'subfetch update-links' to manually update links")
 
 
 if __name__ == '__main__':
