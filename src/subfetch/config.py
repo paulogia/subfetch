@@ -20,6 +20,7 @@ class ChannelConfig:
     channel_url: str
     folder_name: str
     added_date: str  # ISO format
+    category: str = "main"  # "main" or "skeptical"
 
 
 @dataclass
@@ -28,7 +29,8 @@ class ArchiveConfig:
     version: str
     root_path: str
     channels: dict[str, ChannelConfig]  # channel_id -> ChannelConfig
-    compilations_folder: str = "_compilations"  # Folder for symlinks
+    compilations_folder: str = "_compilations"  # Folder for main channels
+    compilations_folder_skeptical: str = "_compilations_skeptical"  # Folder for skeptical channels
     auto_update_links: bool = False  # Auto-update symlinks after sync
 
     def to_dict(self) -> dict:
@@ -41,6 +43,7 @@ class ArchiveConfig:
                 for channel_id, channel_config in self.channels.items()
             },
             'compilations_folder': self.compilations_folder,
+            'compilations_folder_skeptical': self.compilations_folder_skeptical,
             'auto_update_links': self.auto_update_links
         }
 
@@ -56,6 +59,7 @@ class ArchiveConfig:
             root_path=data['root_path'],
             channels=channels,
             compilations_folder=data.get('compilations_folder', '_compilations'),
+            compilations_folder_skeptical=data.get('compilations_folder_skeptical', '_compilations_skeptical'),
             auto_update_links=data.get('auto_update_links', False)
         )
 

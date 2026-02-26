@@ -20,10 +20,11 @@ class SymlinkManager:
         verbose: bool = True
     ) -> Tuple[int, int, int]:
         """
-        Update hard links in master compilations folder.
+        Update hard links in compilations folders for all categories.
 
         Scans all channel folders for cumulative files and creates/updates
-        hard links in the compilations folder. Removes stale hard links.
+        hard links in the appropriate compilations folder based on category.
+        Removes stale hard links.
 
         Args:
             config: Archive configuration
@@ -33,7 +34,48 @@ class SymlinkManager:
         Returns:
             (created_count, removed_count, error_count) tuple
         """
-        compilations_folder = SymlinkManager.get_compilations_folder(config)
+        total_created = 0
+        total_removed = 0
+        total_errors = 0
+
+        # Update links for main category
+        created, removed, errors = SymlinkManager._update_links_for_category(
+            config, "main", clean, verbose
+        )
+        total_created += created
+        total_removed += removed
+        total_errors += errors
+
+        # Update links for skeptical category
+        created, removed, errors = SymlinkManager._update_links_for_category(
+            config, "skeptical", clean, verbose
+        )
+        total_created += created
+        total_removed += removed
+        total_errors += errors
+
+        return total_created, total_removed, total_errors
+
+    @staticmethod
+    def _update_links_for_category(
+        config: ArchiveConfig,
+        category: str,
+        clean: bool = False,
+        verbose: bool = True
+    ) -> Tuple[int, int, int]:
+        """
+        Update hard links for channels of a specific category.
+
+        Args:
+            config: Archive configuration
+            category: "main" or "skeptical"
+            clean: If True, remove all links and rebuild from scratch
+            verbose: If True, print progress messages
+
+        Returns:
+            (created_count, removed_count, error_count) tuple
+        """
+        compilations_folder = SymlinkManager.get_compilations_folder(config, category)
 
         # Create compilations folder if it doesn't exist
         compilations_folder.mkdir(parents=True, exist_ok=True)
@@ -46,10 +88,11 @@ class SymlinkManager:
         if clean:
             removed = SymlinkManager.remove_all_links(compilations_folder)
 
-        # Find all cumulative files across all channels
+        # Find all cumulative files for this category
         cumulative_files = SymlinkManager.find_all_cumulatives(
             Path(config.root_path),
-            config
+            config,
+            category=category
         )
 
         # Build set of expected filenames
@@ -90,13 +133,18 @@ class SymlinkManager:
         return created, removed, errors
 
     @staticmethod
-    def find_all_cumulatives(root_path: Path, config: ArchiveConfig) -> List[Path]:
+    def find_all_cumulatives(
+        root_path: Path,
+        config: ArchiveConfig,
+        category: str = None
+    ) -> List[Path]:
         """
         Scan all channel folders for cumulative compilation files.
 
         Args:
             root_path: Archive root path
             config: Archive configuration
+            category: Optional category filter ("main" or "skeptical"). If None, returns all.
 
         Returns:
             List of absolute paths to cumulative files (*-NNN.txt)
@@ -104,6 +152,12 @@ class SymlinkManager:
         cumulative_files = []
 
         for channel_config in config.channels.values():
+            # Filter by category if specified
+            if category is not None:
+                channel_category = getattr(channel_config, 'category', 'main')
+                if channel_category != category:
+                    continue
+
             channel_folder = root_path / channel_config.folder_name
 
             if not channel_folder.exists():
@@ -222,17 +276,20 @@ class SymlinkManager:
         return removed_count
 
     @staticmethod
-    def get_compilations_folder(config: ArchiveConfig) -> Path:
+    def get_compilations_folder(config: ArchiveConfig, category: str = "main") -> Path:
         """
-        Get absolute path to compilations folder.
+        Get absolute path to compilations folder for a specific category.
 
         Args:
             config: Archive configuration
+            category: "main" or "skeptical" (default: "main")
 
         Returns:
             Path to compilations folder
         """
         root = Path(config.root_path)
-        # Get folder name from config, default to "_compilations"
-        folder_name = getattr(config, 'compilations_folder', '_compilations')
+        if category == "skeptical":
+            folder_name = getattr(config, 'compilations_folder_skeptical', '_compilations_skeptical')
+        else:
+            folder_name = getattr(config, 'compilations_folder', '_compilations')
         return root / folder_name

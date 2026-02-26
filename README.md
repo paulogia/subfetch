@@ -183,10 +183,51 @@ Add a YouTube channel to your tracking list.
 subfetch add "@3blue1brown"
 subfetch add "https://www.youtube.com/@veritasium"
 subfetch add "UCHnyfMqiRRG1u-2MsSQLbXA"
+
+# Add a skeptical channel (compilation links go to separate folder)
+subfetch add "@skepticchannel" --skeptical
 ```
 
 **Options:**
 - `--root <path>` - Use a different archive folder (if you have multiple)
+- `--skeptical` - Mark this channel as skeptical (compilation links go to `_compilations_skeptical/` instead of `_compilations/`)
+
+**Channel Categories:**
+Channels can be marked as "main" (default, for Christian content) or "skeptical". This organizes compilation hard links into separate folders for easier management.
+
+---
+
+### `subfetch mark-skeptical <channel>`
+
+Mark an existing channel as skeptical.
+
+Compilation hard links for this channel will be moved to the skeptical folder when you next run `subfetch update-links`.
+
+**Example:**
+```bash
+subfetch mark-skeptical "@channel"
+subfetch update-links --clean  # Reorganize links
+```
+
+**Options:**
+- `--root <path>` - Use a different archive folder
+
+---
+
+### `subfetch unmark-skeptical <channel>`
+
+Remove skeptical marking from a channel (mark it as main).
+
+Compilation hard links for this channel will be moved back to the main folder when you next run `subfetch update-links`.
+
+**Example:**
+```bash
+subfetch unmark-skeptical "@channel"
+subfetch update-links --clean  # Reorganize links
+```
+
+**Options:**
+- `--root <path>` - Use a different archive folder
 
 ---
 
@@ -420,10 +461,13 @@ Subtitles are organized like this:
 ```
 ~/youtube-subtitles/
 ├── .subfetch_config.json          (tracking info - don't edit)
-├── _compilations/                 (hard links to all cumulative files - optional)
+├── _compilations/                 (hard links for main/Christian channels - optional)
 │   ├── 3Blue1Brown-001.txt        (hard link, same modification date as original)
 │   ├── 3Blue1Brown-002.txt
 │   ├── Veritasium-001.txt
+│   └── ...
+├── _compilations_skeptical/       (hard links for skeptical channels - optional)
+│   ├── SkepticalChannel-001.txt
 │   └── ...
 ├── 3Blue1Brown/
 │   ├── .channel_metadata.json     (channel info)
@@ -431,14 +475,18 @@ Subtitles are organized like this:
 │   ├── 2024-01-15 - Linear algebra [abc123].txt
 │   ├── 2024-02-20 - Calculus [def456].txt
 │   └── ...
-└── Veritasium/
+├── Veritasium/
+│   ├── .channel_metadata.json
+│   ├── Veritasium-001.txt          (cumulative file)
+│   ├── 2024-01-10 - Physics explained [ghi789].txt
+│   └── ...
+└── SkepticalChannel/
     ├── .channel_metadata.json
-    ├── Veritasium-001.txt          (cumulative file)
-    ├── 2024-01-10 - Physics explained [ghi789].txt
+    ├── SkepticalChannel-001.txt    (cumulative file)
     └── ...
 ```
 
-**Note:** The `_compilations/` folder is only created if you run `subfetch update-links` or enable auto-update with `subfetch config-auto-links on`. Files in `_compilations/` are hard links (not copies) - they share the same modification date as the originals, making it easy to sort by "Date Modified" to see recently updated channels.
+**Note:** The `_compilations/` and `_compilations_skeptical/` folders are only created if you run `subfetch update-links` or enable auto-update with `subfetch config-auto-links on`. Files in these folders are hard links (not copies) - they share the same modification date as the originals, making it easy to sort by "Date Modified" to see recently updated channels. Channels are automatically organized by category: main (Christian) channels go to `_compilations/`, while skeptical channels go to `_compilations_skeptical/`.
 
 Each subtitle file:
 - Has the video ID in brackets at the end (so it's always unique)

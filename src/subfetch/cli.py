@@ -231,12 +231,15 @@ def config_cookies_browser(browser: str):
 @main.command()
 @click.argument('channel')
 @click.option('--root', type=click.Path(), default=None, help='Archive root directory')
-def add(channel: str, root: str):
+@click.option('--skeptical', is_flag=True, help='Mark this channel as skeptical')
+def add(channel: str, root: str, skeptical: bool):
     """Add channel to tracking list.
 
     CHANNEL can be a URL, @handle, or channel ID.
 
-    Example: subfetch add "@3blue1brown"
+    Examples:
+      subfetch add "@3blue1brown"
+      subfetch add "@skepticchannel" --skeptical
     """
     try:
         root_path = resolve_root(root)
@@ -267,11 +270,18 @@ def add(channel: str, root: str):
             info['channel_title'],
             info.get('channel_url', channel)
         )
+
+        # Set category based on flag
+        channel_config = config.channels[info['channel_id']]
+        channel_config.category = "skeptical" if skeptical else "main"
+
         ConfigManager.save_archive(config)
 
+        category_label = click.style("skeptical", fg='yellow') if skeptical else click.style("main", fg='cyan')
         click.echo(click.style("Channel added!", fg='green'))
         click.echo(f"  Title: {info['channel_title']}")
         click.echo(f"  Channel ID: {info['channel_id']}")
+        click.echo(f"  Category: {category_label}")
         click.echo(f"  Folder: {root_path / folder_name}")
         click.echo(f"  Videos: {info.get('video_count', '?')}")
         click.echo()
@@ -332,6 +342,90 @@ def remove(channel: str, root: str, delete_folder: bool):
             click.echo("  Folder preserved. Use --delete-folder to remove it.")
 
 
+@main.command('mark-skeptical')
+@click.option('--root', type=click.Path(), default=None, help='Archive root directory')
+@click.argument('channel')
+def mark_skeptical(root: str, channel: str):
+    """Mark a channel as skeptical.
+
+    Compilation links for this channel will be placed in the skeptical folder.
+
+    CHANNEL can be ID, @handle, folder name, or channel title.
+
+    Example: subfetch mark-skeptical "@skepticchannel"
+    """
+    try:
+        root_path = resolve_root(root)
+    except FileNotFoundError as e:
+        click.echo(click.style(f"Error: {e}", fg='red'))
+        raise SystemExit(1)
+
+    try:
+        config = ConfigManager.load_archive(root_path)
+    except FileNotFoundError as e:
+        click.echo(click.style(f"Error: {e}", fg='red'))
+        raise SystemExit(1)
+
+    # Find channel
+    channel_config = ConfigManager.find_channel(config, channel)
+
+    if channel_config is None:
+        click.echo(click.style(f"Error: Channel not found: {channel}", fg='red'))
+        raise SystemExit(1)
+
+    # Set category
+    channel_config.category = "skeptical"
+    ConfigManager.save_archive(config)
+
+    click.echo(click.style("Channel marked as skeptical!", fg='green'))
+    click.echo(f"  Title: {channel_config.channel_title}")
+    click.echo(f"  Category: {click.style('skeptical', fg='yellow')}")
+    click.echo()
+    click.echo("Run 'subfetch update-links --clean' to reorganize compilation links.")
+
+
+@main.command('unmark-skeptical')
+@click.option('--root', type=click.Path(), default=None, help='Archive root directory')
+@click.argument('channel')
+def unmark_skeptical(root: str, channel: str):
+    """Mark a channel as main (remove skeptical marking).
+
+    Compilation links for this channel will be placed in the main folder.
+
+    CHANNEL can be ID, @handle, folder name, or channel title.
+
+    Example: subfetch unmark-skeptical "@channel"
+    """
+    try:
+        root_path = resolve_root(root)
+    except FileNotFoundError as e:
+        click.echo(click.style(f"Error: {e}", fg='red'))
+        raise SystemExit(1)
+
+    try:
+        config = ConfigManager.load_archive(root_path)
+    except FileNotFoundError as e:
+        click.echo(click.style(f"Error: {e}", fg='red'))
+        raise SystemExit(1)
+
+    # Find channel
+    channel_config = ConfigManager.find_channel(config, channel)
+
+    if channel_config is None:
+        click.echo(click.style(f"Error: Channel not found: {channel}", fg='red'))
+        raise SystemExit(1)
+
+    # Set category
+    channel_config.category = "main"
+    ConfigManager.save_archive(config)
+
+    click.echo(click.style("Channel marked as main!", fg='green'))
+    click.echo(f"  Title: {channel_config.channel_title}")
+    click.echo(f"  Category: {click.style('main', fg='cyan')}")
+    click.echo()
+    click.echo("Run 'subfetch update-links --clean' to reorganize compilation links.")
+
+
 @main.command('list')
 @click.option('--root', type=click.Path(), default=None, help='Archive root directory')
 def list_channels(root: str):
@@ -361,8 +455,8 @@ def list_channels(root: str):
         return
 
     # Header
-    click.echo(f"{'Channel':<30} {'ID':<26} {'Folder':<25} {'Videos':>8} {'Last Updated':<20}")
-    click.echo("-" * 120)
+    click.echo(f"{'Channel':<30} {'ID':<26} {'Folder':<25} {'Category':<12} {'Videos':>8} {'Last Updated':<20}")
+    click.echo("-" * 132)
 
     for channel_config in config.channels.values():
         folder_path = root_path / channel_config.folder_name
@@ -383,7 +477,14 @@ def list_channels(root: str):
         title = channel_config.channel_title[:28] + ".." if len(channel_config.channel_title) > 30 else channel_config.channel_title
         folder = channel_config.folder_name[:23] + ".." if len(channel_config.folder_name) > 25 else channel_config.folder_name
 
-        click.echo(f"{title:<30} {channel_config.channel_id:<26} {folder:<25} {video_count:>8} {last_updated:<20}")
+        # Get category with color coding
+        category = getattr(channel_config, 'category', 'main')  # Default to 'main' for backward compat
+        if category == "skeptical":
+            category_display = click.style("skeptical", fg='yellow')
+        else:
+            category_display = click.style("main", fg='cyan')
+
+        click.echo(f"{title:<30} {channel_config.channel_id:<26} {folder:<25} {category_display:<20} {video_count:>8} {last_updated:<20}")
 
 
 @main.command()
@@ -852,9 +953,11 @@ def update_links(root: str, clean: bool):
     if errors > 0:
         click.echo(f"  Errors: {errors}")
 
-    compilations_folder = SymlinkManager.get_compilations_folder(config)
+    compilations_folder_main = SymlinkManager.get_compilations_folder(config, "main")
+    compilations_folder_skeptical = SymlinkManager.get_compilations_folder(config, "skeptical")
     click.echo()
-    click.echo(f"Links location: {compilations_folder}")
+    click.echo(f"Main links: {compilations_folder_main}")
+    click.echo(f"Skeptical links: {compilations_folder_skeptical}")
 
 
 @main.command('config-auto-links')
