@@ -233,13 +233,14 @@ def config_cookies_browser(browser: str):
 @click.option('--root', type=click.Path(), default=None, help='Archive root directory')
 @click.option('--skeptical', is_flag=True, help='Mark this channel as skeptical')
 def add(channel: str, root: str, skeptical: bool):
-    """Add channel to tracking list.
+    """Add channel or playlist to tracking list.
 
-    CHANNEL can be a URL, @handle, or channel ID.
+    CHANNEL can be a channel URL, @handle, channel ID, playlist URL, or playlist ID.
 
     Examples:
       subfetch add "@3blue1brown"
-      subfetch add "@skepticchannel" --skeptical
+      subfetch add "https://www.youtube.com/playlist?list=PLxxx"
+      subfetch add "PLxxx" --skeptical
     """
     try:
         root_path = resolve_root(root)
@@ -253,13 +254,14 @@ def add(channel: str, root: str, skeptical: bool):
         click.echo(click.style(f"Error: {e}", fg='red'))
         raise SystemExit(1)
 
-    # Fetch channel info
-    click.echo(f"Looking up channel: {channel}")
+    # Fetch channel/playlist info
+    source_label = "playlist" if ('list=' in channel or channel.startswith(('PL', 'RD', 'UU', 'FL', 'LP', 'LL'))) else "channel"
+    click.echo(f"Looking up {source_label}: {channel}")
     enumerator = ChannelEnumerator()
     info = enumerator.get_channel_info(channel)
 
     if not info:
-        click.echo(click.style(f"Error: Could not find channel: {channel}", fg='red'))
+        click.echo(click.style(f"Error: Could not find {source_label}: {channel}", fg='red'))
         raise SystemExit(1)
 
     # Add to config
@@ -275,12 +277,21 @@ def add(channel: str, root: str, skeptical: bool):
         channel_config = config.channels[info['channel_id']]
         channel_config.category = "skeptical" if skeptical else "main"
 
+        # Set source type and owner info for playlists
+        if info.get('source_type') == 'playlist':
+            channel_config.source_type = 'playlist'
+            channel_config.owner_channel_id = info.get('owner_channel_id')
+            channel_config.owner_channel_name = info.get('owner_channel_name')
+
         ConfigManager.save_archive(config)
 
         category_label = click.style("skeptical", fg='yellow') if skeptical else click.style("main", fg='cyan')
-        click.echo(click.style("Channel added!", fg='green'))
+        source_label = "Playlist" if info.get('source_type') == 'playlist' else "Channel"
+        click.echo(click.style(f"{source_label} added!", fg='green'))
         click.echo(f"  Title: {info['channel_title']}")
-        click.echo(f"  Channel ID: {info['channel_id']}")
+        click.echo(f"  ID: {info['channel_id']}")
+        if info.get('source_type') == 'playlist' and info.get('owner_channel_name'):
+            click.echo(f"  Owner: {info['owner_channel_name']}")
         click.echo(f"  Category: {category_label}")
         click.echo(f"  Folder: {root_path / folder_name}")
         click.echo(f"  Videos: {info.get('video_count', '?')}")
@@ -429,7 +440,7 @@ def unmark_skeptical(root: str, channel: str):
 @main.command('list')
 @click.option('--root', type=click.Path(), default=None, help='Archive root directory')
 def list_channels(root: str):
-    """List monitored channels.
+    """List monitored channels and playlists.
 
     Example: subfetch list
     """
@@ -446,17 +457,17 @@ def list_channels(root: str):
         raise SystemExit(1)
 
     click.echo(f"Archive: {config.root_path}")
-    click.echo(f"Tracked channels: {len(config.channels)}")
+    click.echo(f"Tracked sources: {len(config.channels)}")
     click.echo()
 
     if not config.channels:
-        click.echo("No channels tracked yet.")
-        click.echo("Add channels with: subfetch add <channel>")
+        click.echo("No channels or playlists tracked yet.")
+        click.echo("Add sources with: subfetch add <channel or playlist>")
         return
 
     # Header
-    click.echo(f"{'Channel':<30} {'ID':<26} {'Folder':<25} {'Category':<12} {'Videos':>8} {'Last Updated':<20}")
-    click.echo("-" * 132)
+    click.echo(f"{'Type':<10} {'Title':<25} {'ID':<26} {'Folder':<20} {'Category':<12} {'Videos':>8} {'Last Updated':<20}")
+    click.echo("-" * 138)
 
     for channel_config in config.channels.values():
         folder_path = root_path / channel_config.folder_name
@@ -474,8 +485,15 @@ def list_channels(root: str):
                 last_updated = metadata.last_updated[:10]  # Just the date part
 
         # Truncate long names
-        title = channel_config.channel_title[:28] + ".." if len(channel_config.channel_title) > 30 else channel_config.channel_title
-        folder = channel_config.folder_name[:23] + ".." if len(channel_config.folder_name) > 25 else channel_config.folder_name
+        title = channel_config.channel_title[:23] + ".." if len(channel_config.channel_title) > 25 else channel_config.channel_title
+        folder = channel_config.folder_name[:18] + ".." if len(channel_config.folder_name) > 20 else channel_config.folder_name
+
+        # Get source type with color coding
+        source_type = getattr(channel_config, 'source_type', 'channel')
+        if source_type == 'playlist':
+            type_display = click.style("Playlist", fg='magenta')
+        else:
+            type_display = click.style("Channel", fg='blue')
 
         # Get category with color coding
         category = getattr(channel_config, 'category', 'main')  # Default to 'main' for backward compat
@@ -484,7 +502,7 @@ def list_channels(root: str):
         else:
             category_display = click.style("main", fg='cyan')
 
-        click.echo(f"{title:<30} {channel_config.channel_id:<26} {folder:<25} {category_display:<20} {video_count:>8} {last_updated:<20}")
+        click.echo(f"{type_display:<18} {title:<25} {channel_config.channel_id:<26} {folder:<20} {category_display:<20} {video_count:>8} {last_updated:<20}")
 
 
 @main.command()

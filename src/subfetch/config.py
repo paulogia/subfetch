@@ -14,13 +14,16 @@ from .utils import ensure_unique_folder_name, sanitize_filename
 
 @dataclass
 class ChannelConfig:
-    """Per-channel tracking information."""
+    """Per-channel or per-playlist tracking information."""
     channel_id: str
     channel_title: str
     channel_url: str
     folder_name: str
     added_date: str  # ISO format
     category: str = "main"  # "main" or "skeptical"
+    source_type: str = "channel"  # "channel" or "playlist"
+    owner_channel_id: Optional[str] = None  # For playlists: creator's channel ID
+    owner_channel_name: Optional[str] = None  # For playlists: creator's channel name
 
 
 @dataclass

@@ -95,18 +95,23 @@ subfetch init ~/youtube-subtitles
 
 This creates a folder in your home directory called `youtube-subtitles` and tells subfetch to use it.
 
-### 2. Add a YouTube channel
+### 2. Add a YouTube channel or playlist
 
-Add a channel you want to track. You can use the channel's @handle, URL, or channel ID:
+Add a channel or playlist you want to track. You can use the channel's @handle, URL, channel ID, playlist URL, or playlist ID:
 
 ```bash
+# Add a channel
 subfetch add "@3blue1brown"
 ```
 
 Or with a full URL:
 
 ```bash
+# Add a channel with URL
 subfetch add "https://www.youtube.com/@veritasium"
+
+# Add a playlist
+subfetch add "https://www.youtube.com/playlist?list=PLxxx"
 ```
 
 ### 3. Download the subtitles
@@ -174,26 +179,36 @@ subfetch config-cookies ~/youtube-cookies.txt
 
 ---
 
-### `subfetch add <channel>`
+### `subfetch add <channel-or-playlist>`
 
-Add a YouTube channel to your tracking list.
+Add a YouTube channel or playlist to your tracking list.
 
 **Examples:**
 ```bash
+# Add a channel
 subfetch add "@3blue1brown"
 subfetch add "https://www.youtube.com/@veritasium"
 subfetch add "UCHnyfMqiRRG1u-2MsSQLbXA"
 
-# Add a skeptical channel (compilation links go to separate folder)
+# Add a playlist
+subfetch add "https://www.youtube.com/playlist?list=PLxxx"
+subfetch add "PLxxx"
+
+# Add a skeptical channel or playlist (compilation links go to separate folder)
 subfetch add "@skepticchannel" --skeptical
+subfetch add "PLxxx" --skeptical
 ```
 
 **Options:**
 - `--root <path>` - Use a different archive folder (if you have multiple)
-- `--skeptical` - Mark this channel as skeptical (compilation links go to `_compilations_skeptical/` instead of `_compilations/`)
+- `--skeptical` - Mark this source as skeptical (compilation links go to `_compilations_skeptical/` instead of `_compilations/`)
 
-**Channel Categories:**
-Channels can be marked as "main" (default, for Christian content) or "skeptical". This organizes compilation hard links into separate folders for easier management.
+**Categories:**
+Both channels and playlists can be marked as "main" (default, for Christian content) or "skeptical". This organizes compilation hard links into separate folders for easier management.
+
+**Supported formats:**
+- **Channels**: @handle, channel URL, channel ID
+- **Playlists**: playlist URL, playlist ID (starts with PL, RD, UU, FL, LP, or LL)
 
 ---
 
@@ -233,7 +248,7 @@ subfetch update-links --clean  # Reorganize links
 
 ### `subfetch list`
 
-Show all channels you're tracking and how many subtitles you've downloaded.
+Show all channels and playlists you're tracking and how many subtitles you've downloaded.
 
 **Example:**
 ```bash
@@ -244,9 +259,11 @@ subfetch list
 - `--root <path>` - Use a different archive folder
 
 **Output shows:**
-- Channel name
-- Channel ID
+- Type (Channel or Playlist)
+- Title
+- ID
 - Folder name
+- Category (main or skeptical)
 - Number of subtitle files downloaded
 - Last time it was updated
 
@@ -461,24 +478,31 @@ Subtitles are organized like this:
 ```
 ~/youtube-subtitles/
 ├── .subfetch_config.json          (tracking info - don't edit)
-├── _compilations/                 (hard links for main/Christian channels - optional)
+├── _compilations/                 (hard links for main channels/playlists - optional)
 │   ├── 3Blue1Brown-001.txt        (hard link, same modification date as original)
 │   ├── 3Blue1Brown-002.txt
 │   ├── Veritasium-001.txt
+│   ├── My Favorite Videos-001.txt (playlist)
 │   └── ...
-├── _compilations_skeptical/       (hard links for skeptical channels - optional)
+├── _compilations_skeptical/       (hard links for skeptical sources - optional)
 │   ├── SkepticalChannel-001.txt
+│   ├── Skeptical Playlist-001.txt
 │   └── ...
-├── 3Blue1Brown/
+├── 3Blue1Brown/                   (channel folder)
 │   ├── .channel_metadata.json     (channel info)
 │   ├── 3Blue1Brown-001.txt        (cumulative file)
 │   ├── 2024-01-15 - Linear algebra [abc123].txt
 │   ├── 2024-02-20 - Calculus [def456].txt
 │   └── ...
-├── Veritasium/
+├── Veritasium/                    (channel folder)
 │   ├── .channel_metadata.json
 │   ├── Veritasium-001.txt          (cumulative file)
 │   ├── 2024-01-10 - Physics explained [ghi789].txt
+│   └── ...
+├── My Favorite Videos/            (playlist folder)
+│   ├── .channel_metadata.json
+│   ├── My Favorite Videos-001.txt (cumulative file)
+│   ├── 2024-03-01 - Video from various channels [xyz123].txt
 │   └── ...
 └── SkepticalChannel/
     ├── .channel_metadata.json
@@ -553,6 +577,66 @@ In addition to individual transcript files, subfetch automatically creates **cum
 - Creating channel-wide analysis or summaries
 
 **Note**: Individual transcript files remain the source of truth. Cumulative files are automatically regenerated as you download new videos.
+
+### Playlists
+
+subfetch supports tracking YouTube playlists just like channels. This is useful for curated collections of videos from various creators or for tracking specific series within a channel.
+
+**Adding playlists:**
+
+```bash
+# Add a public playlist
+subfetch add "https://www.youtube.com/playlist?list=PLxxx"
+
+# Add with just the playlist ID
+subfetch add "PLxxx"
+
+# Mark as skeptical
+subfetch add "PLxxx" --skeptical
+```
+
+**How playlists work:**
+
+- **Same as channels**: Playlists are tracked, synced, and organized exactly like channels
+- **Separate folders**: Each playlist gets its own folder named after the playlist title
+- **Compilation files**: Playlists create cumulative files and hard links just like channels
+- **Category support**: Playlists can be marked as "main" or "skeptical" like channels
+- **Auto-sync**: Running `subfetch run` syncs all tracked playlists and channels
+
+**Supported playlist types:**
+
+- **Public playlists**: Work without authentication
+- **Unlisted playlists**: Work if you have the URL
+- **Private playlists**: Require authentication (use `--cookies` or `--browser`)
+
+**Use cases for playlists:**
+
+- Track a curated collection of apologetics videos from various channels
+- Monitor a specific series within a channel (e.g., a debate series)
+- Archive educational playlists without tracking entire channels
+- Organize content by topic rather than by creator
+
+**Differences from channels:**
+
+- Playlist videos come from various channels, but all download to one playlist folder
+- Playlist ownership is tracked (shows creator's channel name in `subfetch add` output)
+- Playlists may change over time as the owner adds/removes videos
+
+**Example workflow:**
+
+```bash
+# Add a playlist
+subfetch add "https://www.youtube.com/playlist?list=PLxxx"
+
+# View all tracked sources (shows both channels and playlists)
+subfetch list
+
+# Sync everything (playlists and channels)
+subfetch run
+
+# Mark a playlist as skeptical
+subfetch mark-skeptical "Playlist Name"
+```
 
 ## Tips for Non-Technical Users
 
