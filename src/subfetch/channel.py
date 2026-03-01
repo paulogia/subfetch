@@ -23,10 +23,20 @@ class ChannelEnumerator:
     @staticmethod
     def is_playlist_url(identifier: str) -> bool:
         """Detect if identifier is a playlist URL."""
+        identifier = identifier.strip()
         identifier_lower = identifier.lower()
-        return ('/playlist' in identifier_lower or
-                '?list=' in identifier or
-                '&list=' in identifier)
+
+        # Check for playlist URL patterns
+        if ('/playlist' in identifier_lower or
+            '?list=' in identifier_lower or
+            '&list=' in identifier_lower):
+            return True
+
+        # Check for bare playlist ID (starts with known playlist prefixes)
+        if identifier.startswith(('PL', 'RD', 'UU', 'FL', 'LP', 'LL')):
+            return True
+
+        return False
 
     @staticmethod
     def extract_playlist_id(url: str) -> Optional[str]:
