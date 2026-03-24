@@ -9,6 +9,12 @@ from typing import List, Optional
 from .utils import sanitize_filename
 
 
+def _extract_video_id(filename: str) -> Optional[str]:
+    """Extract video ID from individual subtitle filename (the last [ID] group)."""
+    match = re.search(r'\[([^\]]+)\]\.txt$', filename)
+    return match.group(1) if match else None
+
+
 class CumulativeManager:
     """Manages cumulative transcript files for a channel."""
 
@@ -26,7 +32,7 @@ class CumulativeManager:
 
         Args:
             channel_folder: Path to channel's folder
-            channel_title: Display name for the channel
+            channel_title: Display name for the channel (pass "{title}-live" for live streams)
             transcript_paths: List of .txt files to append
 
         Returns:
@@ -96,8 +102,8 @@ class CumulativeManager:
         cumulative_files = []
 
         for file in channel_folder.glob(pattern):
-            # Extract number using regex: ChannelName-001.txt
-            match = re.search(r'-(\d{3})\.txt$', file.name)
+            # Anchored match: exactly ChannelTitle-NNN.txt (not ChannelTitle-live-NNN.txt)
+            match = re.match(rf'^{re.escape(channel_title)}-(\d{{3}})\.txt$', file.name)
             if match:
                 number = int(match.group(1))
                 cumulative_files.append((file, number))
@@ -124,8 +130,8 @@ class CumulativeManager:
         cumulative_files = []
 
         for file in channel_folder.glob(pattern):
-            # Extract number using regex: ChannelName-001.txt
-            match = re.search(r'-(\d{3})\.txt$', file.name)
+            # Anchored match: exactly ChannelTitle-NNN.txt
+            match = re.match(rf'^{re.escape(channel_title)}-(\d{{3}})\.txt$', file.name)
             if match:
                 number = int(match.group(1))
                 cumulative_files.append((file, number))
@@ -183,7 +189,8 @@ class CumulativeManager:
         Rebuild cumulative files for a channel from scratch using the current size limit.
 
         Deletes all existing cumulative files for the channel, then re-creates them
-        from the individual per-video subtitle files in date order.
+        from the individual per-video subtitle files in date order. Live stream files
+        (tracked in .live_video_ids.json) are rebuilt into a separate "-live" cumulative.
 
         Args:
             channel_folder: Path to channel's folder
@@ -192,23 +199,38 @@ class CumulativeManager:
         Returns:
             Number of individual transcript files processed
         """
-        safe_title = sanitize_filename(channel_title, max_length=80)
+        from .metadata import LiveVideoTracker
 
-        # Collect individual subtitle files — identified by [VIDEO_ID] in the name
-        individual_files = sorted(
+        safe_title = sanitize_filename(channel_title, max_length=80)
+        live_title = f"{channel_title}-live"
+        safe_live_title = sanitize_filename(live_title, max_length=80)
+
+        # Collect all individual subtitle files — identified by [VIDEO_ID] in the name
+        all_individual = sorted(
             f for f in channel_folder.glob('*.txt')
             if re.search(r'\[.+\]\.txt$', f.name)
         )
 
-        # Delete all existing cumulative files for this channel
+        # Split into regular and live using the live video ID tracker
+        live_ids = LiveVideoTracker.load(channel_folder)
+        regular_files = [f for f in all_individual
+                         if _extract_video_id(f.name) not in live_ids]
+        live_files = [f for f in all_individual
+                      if _extract_video_id(f.name) in live_ids]
+
+        # Delete and rebuild regular cumulative (anchored pattern to avoid touching live files)
         for f in channel_folder.glob(f"{safe_title}-*.txt"):
-            if re.search(r'-\d{3}\.txt$', f.name):
+            if re.match(rf'^{re.escape(safe_title)}-\d{{3}}\.txt$', f.name):
                 f.unlink()
 
-        if not individual_files:
-            return 0
+        if regular_files:
+            CumulativeManager.append_transcripts(channel_folder, channel_title, regular_files)
 
-        # Re-build from scratch — append_transcripts handles splitting at MAX_SIZE_BYTES
-        CumulativeManager.append_transcripts(channel_folder, channel_title, individual_files)
+        # Delete and rebuild live cumulative (only if live files exist)
+        if live_files:
+            for f in channel_folder.glob(f"{safe_live_title}-*.txt"):
+                if re.match(rf'^{re.escape(safe_live_title)}-\d{{3}}\.txt$', f.name):
+                    f.unlink()
+            CumulativeManager.append_transcripts(channel_folder, live_title, live_files)
 
-        return len(individual_files)
+        return len(all_individual)

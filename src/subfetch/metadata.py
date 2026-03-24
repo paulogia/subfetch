@@ -147,3 +147,88 @@ class NoSubtitlesTracker:
         """Return True if this video has reached the no-subtitle threshold."""
         data = NoSubtitlesTracker._load(channel_folder)
         return data.get(video_id, 0) >= threshold
+
+
+class ErrorTracker:
+    """
+    Track videos that have errored (e.g. members-only, deleted, unavailable).
+
+    Persists a per-channel .errored_videos.json file mapping video IDs to
+    error attempt counts. Once the count reaches the threshold the video is
+    skipped silently on future runs — without incrementing the consecutive-
+    failures counter — so persistent inaccessible videos don't trigger the
+    rate-limiting stop heuristic.
+    """
+
+    @staticmethod
+    def _get_path(channel_folder: Path) -> Path:
+        return channel_folder / '.errored_videos.json'
+
+    @staticmethod
+    def _load(channel_folder: Path) -> dict:
+        path = ErrorTracker._get_path(channel_folder)
+        if not path.exists():
+            return {}
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return {}
+
+    @staticmethod
+    def _save(channel_folder: Path, data: dict) -> None:
+        path = ErrorTracker._get_path(channel_folder)
+        channel_folder.mkdir(parents=True, exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+    @staticmethod
+    def record_attempt(video_id: str, channel_folder: Path) -> int:
+        """Increment error attempt count. Returns new count."""
+        data = ErrorTracker._load(channel_folder)
+        data[video_id] = data.get(video_id, 0) + 1
+        ErrorTracker._save(channel_folder, data)
+        return data[video_id]
+
+    @staticmethod
+    def should_skip(video_id: str, channel_folder: Path, threshold: int = 3) -> bool:
+        """Return True if this video has reached the error threshold."""
+        data = ErrorTracker._load(channel_folder)
+        return data.get(video_id, 0) >= threshold
+
+
+class LiveVideoTracker:
+    """
+    Track which video IDs are from live stream replays.
+
+    Persists a per-channel .live_video_ids.json file (a JSON array of video IDs).
+    Used by rebuild-transcripts to separate live and regular individual subtitle files.
+    """
+
+    @staticmethod
+    def _get_path(channel_folder: Path) -> Path:
+        return channel_folder / '.live_video_ids.json'
+
+    @staticmethod
+    def load(channel_folder: Path) -> set:
+        """Return set of video IDs that are from live stream replays."""
+        path = LiveVideoTracker._get_path(channel_folder)
+        if not path.exists():
+            return set()
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return set(json.load(f))
+        except (json.JSONDecodeError, OSError):
+            return set()
+
+    @staticmethod
+    def add(video_id: str, channel_folder: Path) -> None:
+        """Mark video_id as a live stream replay."""
+        ids = LiveVideoTracker.load(channel_folder)
+        if video_id in ids:
+            return
+        ids.add(video_id)
+        path = LiveVideoTracker._get_path(channel_folder)
+        channel_folder.mkdir(parents=True, exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(sorted(ids), f, indent=2, ensure_ascii=False)

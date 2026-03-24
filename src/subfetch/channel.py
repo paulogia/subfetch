@@ -101,6 +101,11 @@ class ChannelEnumerator:
                     if max_videos and count >= max_videos:
                         break
 
+                    # Skip currently-live and upcoming streams — they have no subtitles
+                    live_status = entry.get('live_status')
+                    if live_status in ('is_live', 'is_upcoming'):
+                        continue
+
                     video_id = entry.get('id', '')
                     yield VideoInfo(
                         video_id=video_id,
@@ -109,10 +114,80 @@ class ChannelEnumerator:
                         channel_id=channel_id,
                         channel_title=channel_title,
                         upload_date=parse_upload_date(entry.get('upload_date')),
+                        is_live=live_status == 'was_live',
                     )
                     count += 1
         except Exception:
             return
+
+    def enumerate_live(
+        self,
+        channel_identifier: str,
+        on_total: Optional[Callable[[int], None]] = None,
+    ) -> Iterator[VideoInfo]:
+        """
+        Enumerate live stream replays from a channel's /streams tab.
+
+        Yields VideoInfo with is_live=True for every entry.
+        Returns empty iterator for playlists or channels with no streams tab.
+        """
+        live_url = self._to_streams_url(channel_identifier)
+        if not live_url:
+            return
+
+        try:
+            with yt_dlp.YoutubeDL(self._ydl_opts) as ydl:
+                info = ydl.extract_info(live_url, download=False)
+
+                if info is None:
+                    return
+
+                entries = info.get('entries', [])
+                if on_total is not None:
+                    on_total(len(entries))
+                channel_id = info.get('channel_id')
+                channel_title = info.get('channel')
+
+                for entry in entries:
+                    if entry is None:
+                        continue
+
+                    # Skip streams that are still live or upcoming
+                    live_status = entry.get('live_status')
+                    if live_status in ('is_live', 'is_upcoming'):
+                        continue
+
+                    video_id = entry.get('id', '')
+                    yield VideoInfo(
+                        video_id=video_id,
+                        title=entry.get('title', ''),
+                        url=f"https://www.youtube.com/watch?v={video_id}",
+                        channel_id=channel_id,
+                        channel_title=channel_title,
+                        upload_date=parse_upload_date(entry.get('upload_date')),
+                        is_live=True,  # Everything from /streams is a live replay
+                    )
+        except Exception:
+            return
+
+    def _to_streams_url(self, identifier: str) -> Optional[str]:
+        """Convert channel identifier to its /streams tab URL. Returns None for playlists."""
+        identifier = identifier.strip()
+
+        if self.is_playlist_url(identifier):
+            return None
+
+        if identifier.startswith('@'):
+            return f"https://www.youtube.com/{identifier}/streams"
+        elif identifier.startswith('UC') and len(identifier) == 24:
+            return f"https://www.youtube.com/channel/{identifier}/streams"
+        elif 'youtube.com' in identifier:
+            url = identifier.rstrip('/')
+            # Replace /videos or /streams suffix, then append /streams
+            url = re.sub(r'/(videos|streams)$', '', url)
+            return url + '/streams'
+        else:
+            return f"https://www.youtube.com/@{identifier}/streams"
 
     def get_channel_info(self, identifier: str) -> Optional[dict]:
         """Get channel or playlist metadata."""

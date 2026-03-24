@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import asdict, dataclass
 from datetime import date
 from pathlib import Path
@@ -24,6 +25,7 @@ class ChannelConfig:
     source_type: str = "channel"  # "channel" or "playlist"
     owner_channel_id: Optional[str] = None  # For playlists: creator's channel ID
     owner_channel_name: Optional[str] = None  # For playlists: creator's channel name
+    include_lives: bool = False  # Download subtitles for live stream replays
 
 
 @dataclass
@@ -253,6 +255,14 @@ class ConfigManager:
         identifier_clean = channel_identifier.lstrip('@')
         for channel_config in config.channels.values():
             if identifier_clean in channel_config.channel_url:
+                return channel_config
+
+        # Try matching handle against channel title with spaces/punctuation stripped
+        # e.g. "@InspiringPhilosophy" matches title "Inspiring Philosophy"
+        identifier_slug = re.sub(r'[\s\-_]', '', identifier_clean).lower()
+        for channel_config in config.channels.values():
+            title_slug = re.sub(r'[\s\-_]', '', channel_config.channel_title).lower()
+            if identifier_slug == title_slug:
                 return channel_config
 
         return None

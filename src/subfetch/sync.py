@@ -4,15 +4,23 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Callable, Optional
 
 from .channel import ChannelEnumerator
 from .config import ArchiveConfig, ChannelConfig
 from .extractor import SubtitleExtractor
-from .metadata import MetadataManager, NoSubtitlesTracker
+from .metadata import ErrorTracker, LiveVideoTracker, MetadataManager, NoSubtitlesTracker
 from .models import VideoInfo
 from .utils import find_subtitle_by_video_id
+
+
+def _is_fresh(upload_date: Optional[date], grace_days: int) -> bool:
+    """Return True if a video is within the grace window (too fresh to record a strike)."""
+    if upload_date is None:
+        return True  # Unknown date — treat as fresh
+    return (date.today() - upload_date).days < grace_days
 
 
 @dataclass
@@ -28,6 +36,7 @@ class SyncProgress:
     errors: int
     rate_limited: bool = False  # True if stopped due to rate limiting detection
     skipped_no_subtitles: int = 0  # Videos skipped because confirmed no subtitles
+    skipped_errored: int = 0  # Videos skipped because error threshold reached
     total_channel_videos: int = 0  # Total videos in channel (0 if unknown)
 
 
@@ -42,6 +51,7 @@ class SyncResult:
     errors: int
     rate_limited: bool = False  # True if stopped early due to rate limiting
     skipped_no_subtitles: int = 0  # Videos skipped because confirmed no subtitles
+    skipped_errored: int = 0  # Videos skipped because error threshold reached
 
 
 class ChannelSynchronizer:
@@ -102,6 +112,7 @@ class ChannelSynchronizer:
             result.missing_captions += progress.missing_captions
             result.errors += progress.errors
             result.skipped_no_subtitles += progress.skipped_no_subtitles
+            result.skipped_errored += progress.skipped_errored
 
             if progress.rate_limited:
                 result.rate_limited = True
@@ -116,7 +127,8 @@ class ChannelSynchronizer:
         progress_callback: Optional[Callable[[str, VideoInfo, str], None]] = None,
         delay: float = 2.5,
         max_consecutive_failures: int = 10,
-        no_sub_threshold: int = 2
+        no_sub_threshold: int = 2,
+        live_grace_days: int = 7,
     ) -> SyncProgress:
         """
         Sync single channel by ID.
@@ -129,6 +141,7 @@ class ChannelSynchronizer:
             delay: Seconds to wait between videos
             max_consecutive_failures: Stop after this many consecutive missing captions or errors (likely rate limiting)
             no_sub_threshold: Skip permanently after this many confirmed no-subtitle results (default 2)
+            live_grace_days: Days a live stream video is exempt from no-subtitle strikes (default 7)
 
         Returns:
             SyncProgress with channel statistics
@@ -187,12 +200,25 @@ class ChannelSynchronizer:
                     progress_callback(channel_config.channel_title, video, 'skipped')
                 continue
 
+            # Skip live streams silently for channels that don't have include_lives set
+            if video.is_live and not channel_config.include_lives:
+                progress.skipped += 1
+                continue
+
             # Check if confirmed no subtitles (persistent across runs)
             if NoSubtitlesTracker.should_skip(video.video_id, channel_folder, threshold=no_sub_threshold):
                 progress.skipped_no_subtitles += 1
                 consecutive_failures = 0
                 if progress_callback:
                     progress_callback(channel_config.channel_title, video, 'skipped_no_subtitles')
+                continue
+
+            # Check if video has hit the error threshold (e.g. members-only, deleted)
+            if ErrorTracker.should_skip(video.video_id, channel_folder, threshold=no_sub_threshold):
+                progress.skipped_errored += 1
+                consecutive_failures = 0
+                if progress_callback:
+                    progress_callback(channel_config.channel_title, video, 'skipped_errored')
                 continue
 
             # Stop once we've attempted enough new videos
@@ -212,22 +238,38 @@ class ChannelSynchronizer:
                     if progress_callback:
                         progress_callback(channel_config.channel_title, video, 'downloaded')
 
-                    # Append to cumulative file immediately after successful download
+                    # Append to cumulative file immediately after successful download.
+                    # Live streams get their own "-live" cumulative series.
                     try:
                         from .cumulative import CumulativeManager
+                        cumulative_title = (
+                            f"{channel_config.channel_title}-live"
+                            if video.is_live
+                            else channel_config.channel_title
+                        )
                         CumulativeManager.append_transcripts(
                             channel_folder,
-                            channel_config.channel_title,
+                            cumulative_title,
                             [Path(result.file_path)]
                         )
+                        if video.is_live:
+                            LiveVideoTracker.add(video.video_id, channel_folder)
                     except Exception:
                         # Don't fail download if cumulative append fails
                         pass
                 elif result.error == "No English subtitles available":
-                    # Permanent: yt-dlp confirmed no English tracks exist
+                    # Permanent: yt-dlp confirmed no English tracks exist.
+                    # For fresh live streams, skip recording the strike — subtitles
+                    # may not be available yet and will appear within days.
                     progress.missing_captions += 1
                     consecutive_failures += 1
-                    NoSubtitlesTracker.record_attempt(video.video_id, channel_folder)
+                    fresh_live = (
+                        video.is_live
+                        and channel_config.include_lives
+                        and _is_fresh(video.upload_date, live_grace_days)
+                    )
+                    if not fresh_live:
+                        NoSubtitlesTracker.record_attempt(video.video_id, channel_folder)
                     if progress_callback:
                         progress_callback(channel_config.channel_title, video, 'missing_captions')
 
@@ -241,6 +283,7 @@ class ChannelSynchronizer:
                     # since we can't reliably distinguish rate limiting from other failures
                     progress.errors += 1
                     consecutive_failures += 1
+                    ErrorTracker.record_attempt(video.video_id, channel_folder)
                     if progress_callback:
                         progress_callback(channel_config.channel_title, video, 'error')
 
@@ -248,9 +291,10 @@ class ChannelSynchronizer:
                         progress.rate_limited = True
                         break
 
-            except Exception as e:
+            except Exception:
                 progress.errors += 1
                 consecutive_failures += 1
+                ErrorTracker.record_attempt(video.video_id, channel_folder)
                 if progress_callback:
                     progress_callback(channel_config.channel_title, video, 'error')
 
@@ -260,6 +304,94 @@ class ChannelSynchronizer:
 
             # Conservative delay between downloads to avoid rate limiting
             time.sleep(delay)
+
+        # Enumerate the /streams tab for channels with include_lives.
+        # The /videos tab either omits live replays or doesn't reliably mark them,
+        # so we query the streams tab directly.
+        if channel_config.include_lives and not progress.rate_limited:
+            def _on_live_total(n: int) -> None:
+                progress.total_channel_videos += n
+
+            live_videos_attempted = 0
+            for video in self.enumerator.enumerate_live(channel_id, on_total=_on_live_total):
+                progress.processed += 1
+
+                if self._should_skip_video(channel_folder, video.video_id):
+                    progress.skipped += 1
+                    consecutive_failures = 0
+                    if progress_callback:
+                        progress_callback(channel_config.channel_title, video, 'skipped')
+                    continue
+
+                if NoSubtitlesTracker.should_skip(video.video_id, channel_folder, threshold=no_sub_threshold):
+                    progress.skipped_no_subtitles += 1
+                    consecutive_failures = 0
+                    if progress_callback:
+                        progress_callback(channel_config.channel_title, video, 'skipped_no_subtitles')
+                    continue
+
+                if ErrorTracker.should_skip(video.video_id, channel_folder, threshold=no_sub_threshold):
+                    progress.skipped_errored += 1
+                    consecutive_failures = 0
+                    if progress_callback:
+                        progress_callback(channel_config.channel_title, video, 'skipped_errored')
+                    continue
+
+                # Respect max_videos cap for live streams (same semantics as main loop)
+                if max_videos is not None and live_videos_attempted >= max_videos:
+                    break
+                live_videos_attempted += 1
+
+                try:
+                    result = self.extractor.extract(video.url)
+
+                    if result.success:
+                        progress.downloaded += 1
+                        videos_added += 1
+                        consecutive_failures = 0
+                        if progress_callback:
+                            progress_callback(channel_config.channel_title, video, 'downloaded')
+                        try:
+                            from .cumulative import CumulativeManager
+                            CumulativeManager.append_transcripts(
+                                channel_folder,
+                                f"{channel_config.channel_title}-live",
+                                [Path(result.file_path)]
+                            )
+                            LiveVideoTracker.add(video.video_id, channel_folder)
+                        except Exception:
+                            pass
+                    elif result.error == "No English subtitles available":
+                        progress.missing_captions += 1
+                        consecutive_failures += 1
+                        if not _is_fresh(video.upload_date, live_grace_days):
+                            NoSubtitlesTracker.record_attempt(video.video_id, channel_folder)
+                        if progress_callback:
+                            progress_callback(channel_config.channel_title, video, 'missing_captions')
+                        if consecutive_failures >= max_consecutive_failures:
+                            progress.rate_limited = True
+                            break
+                    else:
+                        progress.errors += 1
+                        consecutive_failures += 1
+                        ErrorTracker.record_attempt(video.video_id, channel_folder)
+                        if progress_callback:
+                            progress_callback(channel_config.channel_title, video, 'error')
+                        if consecutive_failures >= max_consecutive_failures:
+                            progress.rate_limited = True
+                            break
+
+                except Exception:
+                    progress.errors += 1
+                    consecutive_failures += 1
+                    ErrorTracker.record_attempt(video.video_id, channel_folder)
+                    if progress_callback:
+                        progress_callback(channel_config.channel_title, video, 'error')
+                    if consecutive_failures >= max_consecutive_failures:
+                        progress.rate_limited = True
+                        break
+
+                time.sleep(delay)
 
         # Update metadata
         if videos_added > 0:

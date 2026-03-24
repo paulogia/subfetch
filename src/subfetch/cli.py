@@ -232,7 +232,8 @@ def config_cookies_browser(browser: str):
 @click.argument('channel')
 @click.option('--root', type=click.Path(), default=None, help='Archive root directory')
 @click.option('--skeptical', is_flag=True, help='Mark this channel as skeptical')
-def add(channel: str, root: str, skeptical: bool):
+@click.option('--lives', is_flag=True, help='Enable live stream subtitle downloading for this channel')
+def add(channel: str, root: str, skeptical: bool, lives: bool):
     """Add channel or playlist to tracking list.
 
     CHANNEL can be a channel URL, @handle, channel ID, playlist URL, or playlist ID.
@@ -241,6 +242,7 @@ def add(channel: str, root: str, skeptical: bool):
       subfetch add "@3blue1brown"
       subfetch add "https://www.youtube.com/playlist?list=PLxxx"
       subfetch add "PLxxx" --skeptical
+      subfetch add "@livestreamer" --lives
     """
     try:
         root_path = resolve_root(root)
@@ -273,9 +275,10 @@ def add(channel: str, root: str, skeptical: bool):
             info.get('channel_url', channel)
         )
 
-        # Set category based on flag
+        # Set category and flags based on options
         channel_config = config.channels[info['channel_id']]
         channel_config.category = "skeptical" if skeptical else "main"
+        channel_config.include_lives = lives
 
         # Set source type and owner info for playlists
         if info.get('source_type') == 'playlist':
@@ -293,6 +296,7 @@ def add(channel: str, root: str, skeptical: bool):
         if info.get('source_type') == 'playlist' and info.get('owner_channel_name'):
             click.echo(f"  Owner: {info['owner_channel_name']}")
         click.echo(f"  Category: {category_label}")
+        click.echo(f"  Lives: {click.style('enabled', fg='green') if lives else 'disabled'}")
         click.echo(f"  Folder: {root_path / folder_name}")
         click.echo(f"  Videos: {info.get('video_count', '?')}")
         click.echo()
@@ -437,6 +441,84 @@ def unmark_skeptical(root: str, channel: str):
     click.echo("Run 'subfetch update-links --clean' to reorganize compilation links.")
 
 
+@main.command('mark-lives')
+@click.option('--root', type=click.Path(), default=None, help='Archive root directory')
+@click.argument('channel')
+def mark_lives(root: str, channel: str):
+    """Enable live stream subtitle downloading for a channel.
+
+    When enabled, live stream replays are downloaded into a separate
+    ChannelName-live-NNN.txt compilation file, and fresh live streams
+    are exempt from no-subtitle strikes.
+
+    CHANNEL can be ID, @handle, folder name, or channel title.
+
+    Example: subfetch mark-lives "@livestreamer"
+    """
+    try:
+        root_path = resolve_root(root)
+    except FileNotFoundError as e:
+        click.echo(click.style(f"Error: {e}", fg='red'))
+        raise SystemExit(1)
+
+    try:
+        config = ConfigManager.load_archive(root_path)
+    except FileNotFoundError as e:
+        click.echo(click.style(f"Error: {e}", fg='red'))
+        raise SystemExit(1)
+
+    channel_config = ConfigManager.find_channel(config, channel)
+
+    if channel_config is None:
+        click.echo(click.style(f"Error: Channel not found: {channel}", fg='red'))
+        raise SystemExit(1)
+
+    channel_config.include_lives = True
+    ConfigManager.save_archive(config)
+
+    click.echo(click.style("Live stream downloading enabled!", fg='green'))
+    click.echo(f"  Title: {channel_config.channel_title}")
+    click.echo(f"  Lives: {click.style('enabled', fg='green')}")
+    click.echo()
+    click.echo("Run 'subfetch run' to download live stream subtitles.")
+
+
+@main.command('unmark-lives')
+@click.option('--root', type=click.Path(), default=None, help='Archive root directory')
+@click.argument('channel')
+def unmark_lives(root: str, channel: str):
+    """Disable live stream subtitle downloading for a channel.
+
+    CHANNEL can be ID, @handle, folder name, or channel title.
+
+    Example: subfetch unmark-lives "@livestreamer"
+    """
+    try:
+        root_path = resolve_root(root)
+    except FileNotFoundError as e:
+        click.echo(click.style(f"Error: {e}", fg='red'))
+        raise SystemExit(1)
+
+    try:
+        config = ConfigManager.load_archive(root_path)
+    except FileNotFoundError as e:
+        click.echo(click.style(f"Error: {e}", fg='red'))
+        raise SystemExit(1)
+
+    channel_config = ConfigManager.find_channel(config, channel)
+
+    if channel_config is None:
+        click.echo(click.style(f"Error: Channel not found: {channel}", fg='red'))
+        raise SystemExit(1)
+
+    channel_config.include_lives = False
+    ConfigManager.save_archive(config)
+
+    click.echo(click.style("Live stream downloading disabled!", fg='green'))
+    click.echo(f"  Title: {channel_config.channel_title}")
+    click.echo(f"  Lives: disabled")
+
+
 @main.command('list')
 @click.option('--root', type=click.Path(), default=None, help='Archive root directory')
 def list_channels(root: str):
@@ -466,8 +548,8 @@ def list_channels(root: str):
         return
 
     # Header
-    click.echo(f"{'Type':<10} {'Title':<25} {'ID':<26} {'Folder':<20} {'Category':<12} {'Videos':>8} {'Last Updated':<20}")
-    click.echo("-" * 138)
+    click.echo(f"{'Type':<10} {'Title':<25} {'ID':<26} {'Folder':<20} {'Category':<12} {'Lives':<7} {'Videos':>8} {'Last Updated':<20}")
+    click.echo("-" * 145)
 
     for channel_config in config.channels.values():
         folder_path = root_path / channel_config.folder_name
@@ -502,7 +584,11 @@ def list_channels(root: str):
         else:
             category_display = click.style("main", fg='cyan')
 
-        click.echo(f"{type_display:<18} {title:<25} {channel_config.channel_id:<26} {folder:<20} {category_display:<20} {video_count:>8} {last_updated:<20}")
+        # Show lives flag
+        include_lives = getattr(channel_config, 'include_lives', False)
+        lives_display = click.style("yes", fg='green') if include_lives else "-"
+
+        click.echo(f"{type_display:<18} {title:<25} {channel_config.channel_id:<26} {folder:<20} {category_display:<20} {lives_display:<7} {video_count:>8} {last_updated:<20}")
 
 
 @main.command()
@@ -515,8 +601,9 @@ def list_channels(root: str):
 @click.option('--delay', type=float, default=2.5, help='Seconds to wait between videos (default: 2.5, try 5-10 if rate limited)')
 @click.option('--max-consecutive-failures', type=int, default=10, help='Stop after N consecutive missing captions or errors (rate limit detection, default: 10)')
 @click.option('--no-sub-threshold', type=int, default=2, help='Skip video permanently after N confirmed no-subtitle results (default: 2)')
+@click.option('--live-grace-days', type=int, default=7, help='Days a live stream video is exempt from no-subtitle strikes (default: 7)')
 @click.option('--update-links', is_flag=True, help='Update compilation symlinks after sync completes')
-def run(root: str, max_videos: int, max_total: int, channel: str, cookies: str, browser: str, delay: float, max_consecutive_failures: int, no_sub_threshold: int, update_links: bool):
+def run(root: str, max_videos: int, max_total: int, channel: str, cookies: str, browser: str, delay: float, max_consecutive_failures: int, no_sub_threshold: int, live_grace_days: int, update_links: bool):
     """Download subtitles for all tracked channels.
 
     Examples:
@@ -562,7 +649,7 @@ def run(root: str, max_videos: int, max_total: int, channel: str, cookies: str, 
             symbol = click.style("✓", fg='green')
         elif status == 'skipped':
             symbol = click.style("⊘", fg='blue')
-        elif status == 'skipped_no_subtitles':
+        elif status in ('skipped_no_subtitles', 'skipped_errored'):
             symbol = click.style("⊘", fg='bright_black')
         elif status == 'missing_captions':
             symbol = click.style("✗", fg='yellow')
@@ -581,6 +668,7 @@ def run(root: str, max_videos: int, max_total: int, channel: str, cookies: str, 
     total_downloaded = 0
     total_skipped = 0
     total_skipped_no_subtitles = 0
+    total_skipped_errored = 0
     total_missing = 0
     total_errors = 0
     total_processed = 0
@@ -619,6 +707,7 @@ def run(root: str, max_videos: int, max_total: int, channel: str, cookies: str, 
             delay=delay,
             max_consecutive_failures=max_consecutive_failures,
             no_sub_threshold=no_sub_threshold,
+            live_grace_days=live_grace_days,
         )
 
         click.echo()
@@ -629,6 +718,8 @@ def run(root: str, max_videos: int, max_total: int, channel: str, cookies: str, 
             ]
             if p.skipped_no_subtitles:
                 parts.append(f"{p.skipped_no_subtitles} no-subtitles")
+            if p.skipped_errored:
+                parts.append(f"{p.skipped_errored} errored")
             parts += [f"{p.missing_captions} missing captions", f"{p.errors} errors"]
             return ", ".join(parts)
 
@@ -643,7 +734,7 @@ def run(root: str, max_videos: int, max_total: int, channel: str, cookies: str, 
         ch_total = progress.total_channel_videos or progress.processed
         ch_not_seen = ch_total - progress.processed
         ch_pending = progress.missing_captions + progress.errors
-        ch_addressable = ch_total - progress.skipped_no_subtitles
+        ch_addressable = ch_total - progress.skipped_no_subtitles - progress.skipped_errored
         if ch_addressable > 0:
             ch_pct = ch_has / ch_addressable * 100
             pct_str = click.style(f"{ch_pct:.0f}%", fg='green' if ch_pct >= 95 else 'yellow')
@@ -658,6 +749,7 @@ def run(root: str, max_videos: int, max_total: int, channel: str, cookies: str, 
         total_downloaded += progress.downloaded
         total_skipped += progress.skipped
         total_skipped_no_subtitles += progress.skipped_no_subtitles
+        total_skipped_errored += progress.skipped_errored
         total_missing += progress.missing_captions
         total_errors += progress.errors
         total_processed += progress.processed
@@ -687,11 +779,13 @@ def run(root: str, max_videos: int, max_total: int, channel: str, cookies: str, 
         click.echo(f"  {click.style('⊘', fg='blue')} Skipped (already downloaded): {total_skipped}")
         if total_skipped_no_subtitles > 0:
             click.echo(f"  {click.style('⊘', fg='bright_black')} Skipped (no subtitles): {total_skipped_no_subtitles}")
+        if total_skipped_errored > 0:
+            click.echo(f"  {click.style('⊘', fg='bright_black')} Skipped (errored): {total_skipped_errored}")
         click.echo(f"  {click.style('✗', fg='yellow')} Missing captions: {total_missing}")
         if total_errors > 0:
             click.echo(f"  {click.style('⚠', fg='red')} Errors: {total_errors}")
         total_has = total_downloaded + total_skipped
-        total_addressable = total_processed - total_skipped_no_subtitles
+        total_addressable = total_processed - total_skipped_no_subtitles - total_skipped_errored
         total_pending = total_missing + total_errors
         if total_addressable > 0:
             total_pct = total_has / total_addressable * 100

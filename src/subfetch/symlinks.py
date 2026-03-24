@@ -163,14 +163,17 @@ class SymlinkManager:
             if not channel_folder.exists():
                 continue
 
-            # Find all cumulative files for this channel
             safe_title = sanitize_filename(channel_config.channel_title, max_length=80)
-            pattern = f"{safe_title}-*.txt"
 
-            for file in channel_folder.glob(pattern):
-                # Match cumulative pattern: ChannelName-NNN.txt
-                match = re.search(r'-(\d{3})\.txt$', file.name)
-                if match:
+            # Find regular cumulative files: ChannelName-NNN.txt (anchored match)
+            for file in channel_folder.glob(f"{safe_title}-*.txt"):
+                if re.match(rf'^{re.escape(safe_title)}-(\d{{3}})\.txt$', file.name):
+                    cumulative_files.append(file.absolute())
+
+            # Find live cumulative files: ChannelName-live-NNN.txt
+            safe_live_title = f"{safe_title}-live"
+            for file in channel_folder.glob(f"{safe_live_title}-*.txt"):
+                if re.match(rf'^{re.escape(safe_live_title)}-(\d{{3}})\.txt$', file.name):
                     cumulative_files.append(file.absolute())
 
         return cumulative_files

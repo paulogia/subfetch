@@ -22,6 +22,7 @@ class VideoInfo:
     upload_date: Optional[date] = None
     channel_id: Optional[str] = None
     channel_title: Optional[str] = None
+    is_live: bool = False  # True if this is a live stream replay (was_live)
 
 
 @dataclass
