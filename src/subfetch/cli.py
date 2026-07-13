@@ -96,7 +96,7 @@ def list_videos(channel: str, limit: int):
             click.echo(f"... (limited to {limit} videos)")
             break
 
-        date_str = video.upload_date.isoformat() if video.upload_date else "????-??-??"
+        date_str = video.upload_date.isoformat() if video.upload_date else "????"
         # Truncate title for display
         title = video.title[:60] + "..." if len(video.title) > 60 else video.title
         click.echo(f"[{video.video_id}] {date_str} - {title}")
@@ -643,20 +643,19 @@ def run(root: str, max_videos: int, max_total: int, channel: str, cookies: str, 
     # Progress callback for real-time updates
     def progress_callback(channel_title: str, video, status: str):
         # Truncate title for display
-        title = video.title[:50] + "..." if len(video.title) > 50 else video.title
+        raw_title = video.title or video.video_id
+        title = raw_title[:50] + "..." if len(raw_title) > 50 else raw_title
 
-        if status == 'downloaded':
+        if status in ('skipped', 'skipped_no_subtitles', 'skipped_errored'):
+            return
+        elif status == 'downloaded':
             symbol = click.style("✓", fg='green')
-        elif status == 'skipped':
-            symbol = click.style("⊘", fg='blue')
-        elif status in ('skipped_no_subtitles', 'skipped_errored'):
-            symbol = click.style("⊘", fg='bright_black')
         elif status == 'missing_captions':
             symbol = click.style("✗", fg='yellow')
         else:  # error
             symbol = click.style("⚠", fg='red')
 
-        date_str = video.upload_date.isoformat() if video.upload_date else "????-??-??"
+        date_str = video.upload_date.isoformat() if video.upload_date else "????"
         click.echo(f"{symbol} [{video.video_id}] {date_str} - {title}")
 
     # Run sync

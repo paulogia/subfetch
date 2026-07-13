@@ -197,11 +197,15 @@ subfetch add "PLxxx"
 # Add a skeptical channel or playlist (compilation links go to separate folder)
 subfetch add "@skepticchannel" --skeptical
 subfetch add "PLxxx" --skeptical
+
+# Include live stream replay subtitles for this channel
+subfetch add "@livestreamer" --lives
 ```
 
 **Options:**
 - `--root <path>` - Use a different archive folder (if you have multiple)
 - `--skeptical` - Mark this source as skeptical (compilation links go to `_compilations_skeptical/` instead of `_compilations/`)
+- `--lives` - Enable downloading subtitles for live stream replays (stored in a separate `ChannelName-live-NNN.txt` cumulative file)
 
 **Categories:**
 Both channels and playlists can be marked as "main" (default, for Christian content) or "skeptical". This organizes compilation hard links into separate folders for easier management.
@@ -239,6 +243,36 @@ Compilation hard links for this channel will be moved back to the main folder wh
 ```bash
 subfetch unmark-skeptical "@channel"
 subfetch update-links --clean  # Reorganize links
+```
+
+**Options:**
+- `--root <path>` - Use a different archive folder
+
+---
+
+### `subfetch mark-lives <channel>`
+
+Enable live stream subtitle downloading for an existing channel.
+
+When enabled, live stream replays are downloaded and stored in a separate `ChannelName-live-NNN.txt` cumulative file (so they don't mix with regular video transcripts). Live streams are also exempt from no-subtitle strikes for a grace period after airing.
+
+**Example:**
+```bash
+subfetch mark-lives "@livestreamer"
+```
+
+**Options:**
+- `--root <path>` - Use a different archive folder
+
+---
+
+### `subfetch unmark-lives <channel>`
+
+Disable live stream subtitle downloading for a channel.
+
+**Example:**
+```bash
+subfetch unmark-lives "@livestreamer"
 ```
 
 **Options:**
@@ -683,7 +717,15 @@ pip3 install /Users/pens/Documents/dev/subfetch
 ```
 
 ### "Command not found: subfetch"
-This happens when Python's bin directory isn't in your PATH.
+If subfetch was working before but stopped after restarting your computer, your virtual environment may not be activated. From the subfetch directory, run:
+
+```bash
+source .venv/bin/activate
+```
+
+You'll need to do this each time you open a new terminal session.
+
+If that's not the issue, this can also happen when Python's bin directory isn't in your PATH.
 
 **Quick solution:** Use `python3 -m subfetch` instead of `subfetch` for all commands.
 
