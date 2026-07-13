@@ -10,7 +10,7 @@ from typing import Callable, Optional
 
 from .channel import ChannelEnumerator
 from .config import ArchiveConfig, ChannelConfig
-from .extractor import SubtitleExtractor
+from .extractor import UPCOMING_LIVE_ERROR, SubtitleExtractor
 from .metadata import ErrorTracker, LiveVideoTracker, MetadataManager, NoSubtitlesTracker
 from .models import VideoInfo
 from .utils import find_subtitle_by_video_id
@@ -278,6 +278,13 @@ class ChannelSynchronizer:
                         progress.rate_limited = True
                         break
 
+                elif result.error == UPCOMING_LIVE_ERROR:
+                    # Scheduled live/premiere that hasn't aired: no strike, no
+                    # failure count — it will resolve itself once the event airs.
+                    progress.errors += 1
+                    if progress_callback:
+                        progress_callback(channel_config.channel_title, video, 'error')
+
                 else:
                     # Transient error — treat same as missing captions for stop heuristic
                     # since we can't reliably distinguish rate limiting from other failures
@@ -371,6 +378,10 @@ class ChannelSynchronizer:
                         if consecutive_failures >= max_consecutive_failures:
                             progress.rate_limited = True
                             break
+                    elif result.error == UPCOMING_LIVE_ERROR:
+                        progress.errors += 1
+                        if progress_callback:
+                            progress_callback(channel_config.channel_title, video, 'error')
                     else:
                         progress.errors += 1
                         consecutive_failures += 1

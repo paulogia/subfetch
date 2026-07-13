@@ -22,6 +22,16 @@ from .utils import parse_upload_date, sanitize_filename
 # Debug mode controlled by environment variable
 DEBUG = os.environ.get('SUBFETCH_DEBUG', '').lower() in ('1', 'true', 'yes')
 
+# Scheduled live streams / premieres that haven't aired yet. These must not
+# accrue error strikes — they resolve on their own once the event airs.
+UPCOMING_LIVE_ERROR = "Upcoming live event"
+_UPCOMING_PATTERNS = ('live event will begin', 'premieres in', 'premiere will begin')
+
+
+def _is_upcoming_error(text: str) -> bool:
+    text = text.lower()
+    return any(p in text for p in _UPCOMING_PATTERNS)
+
 
 def _ms_to_srt_time(ms: int) -> str:
     h = ms // 3_600_000
@@ -168,11 +178,18 @@ class SubtitleExtractor:
         except Exception as e:
             if DEBUG:
                 print(f"DEBUG: Exception for {video_url}: {type(e).__name__}: {e}", file=sys.stderr)
+            if _is_upcoming_error(str(e)):
+                return SubtitleResult(video=_UNKNOWN, success=False, error=UPCOMING_LIVE_ERROR)
             return SubtitleResult(video=_UNKNOWN, success=False, error="Failed to extract video info")
 
         if info is None:
+            # With ignoreerrors=True, yt-dlp reports the error to stderr and
+            # returns None; recover the message from the captured stream.
+            captured = stderr_target.getvalue() if isinstance(stderr_target, io.StringIO) else ''
             if DEBUG:
                 print(f"DEBUG: yt-dlp returned None for {video_url}", file=sys.stderr)
+            if _is_upcoming_error(captured):
+                return SubtitleResult(video=_UNKNOWN, success=False, error=UPCOMING_LIVE_ERROR)
             return SubtitleResult(video=_UNKNOWN, success=False, error="Failed to extract video info")
 
         video_id = info.get('id', '')
