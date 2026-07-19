@@ -128,6 +128,43 @@ class SubtitleExtractor:
         """Set output directory for next extraction."""
         self.output_dir = output_dir
 
+    @property
+    def _has_cookies(self) -> bool:
+        return bool(
+            (self.cookies_file and self.cookies_file.exists())
+            or self.cookies_from_browser
+        )
+
+    def _build_ydl_opts(self) -> dict:
+        """Base yt-dlp options with auth-appropriate player client selection."""
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': False,
+            'no_color': True,
+            'ignoreerrors': True,
+            # yt-dlp needs a JS runtime for YouTube's JS challenges; enable
+            # both so whichever is installed gets used (deno is yt-dlp's
+            # default, node is commonly already present).
+            'js_runtimes': {'deno': {}, 'node': {}},
+        }
+        if self._has_cookies:
+            # Default clients support cookie auth and return caption data in
+            # the player API JSON. Forcing ios here would break captions: it
+            # doesn't support cookies, so yt-dlp skips it entirely.
+            if self.cookies_file and self.cookies_file.exists():
+                ydl_opts['cookiefile'] = str(self.cookies_file)
+            else:
+                ydl_opts['cookiesfrombrowser'] = (self.cookies_from_browser,)
+        else:
+            # ios player client returns automatic caption data in the player
+            # API JSON, which is fetched during info extraction (download=False).
+            ydl_opts['extractor_args'] = {
+                'youtube': {
+                    'player_client': ['ios'],
+                },
+            }
+        return ydl_opts
+
     def extract(self, video_url: str) -> SubtitleResult:
         """
         Extract English subtitles for a single video.
@@ -137,42 +174,33 @@ class SubtitleExtractor:
         2. Auto-generated English captions
         3. Translated English captions (en-orig)
 
-        Uses download=False with the ios player client to get the info dict
-        (which includes subtitle URLs from the ios player API JSON without
-        needing a PO token), then downloads the subtitle URL directly.
-        This bypasses yt-dlp's format selection, which would fail because
-        all ios video formats require a GVS PO token.
+        Uses download=False with process=False to get the info dict (which
+        includes subtitle URLs from the player API JSON), then downloads the
+        subtitle URL directly. This bypasses yt-dlp's format selection, which
+        would fail because video formats require a GVS PO token.
+
+        Client selection depends on authentication:
+        - Cookie-less: force the ios client, which returns caption data
+          anonymously. (Since 2026, YouTube bot-gates flagged IPs at the
+          player API level regardless of client or PO token, so cookie-less
+          mode only works from IPs in good standing.)
+        - With cookies: use yt-dlp's default clients. The ios client must NOT
+          be forced here — it does not support cookies, so yt-dlp skips it and
+          returns an empty caption list, mislabeling videos as "no subtitles".
         """
         if self.output_dir is None:
             raise ValueError("output_dir must be set before extraction")
 
         _UNKNOWN = VideoInfo(video_id="unknown", title="", url=video_url)
-
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': False,
-            'no_color': True,
-            'ignoreerrors': True,
-            # ios player client returns automatic caption data in the player
-            # API JSON, which is fetched during info extraction (download=False).
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['ios'],
-                },
-            },
-        }
-        if self.cookies_file and self.cookies_file.exists():
-            ydl_opts['cookiefile'] = str(self.cookies_file)
-        elif self.cookies_from_browser:
-            ydl_opts['cookiesfrombrowser'] = (self.cookies_from_browser,)
+        ydl_opts = self._build_ydl_opts()
 
         try:
             stderr_target = sys.stderr if DEBUG else io.StringIO()
             with contextlib.redirect_stderr(stderr_target):
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     # process=False: skip process_ie_result entirely, so format selection
-                    # never runs (it would fail because all ios formats need a GVS PO token).
-                    # The ios player API JSON — fetched during _real_extract — still populates
+                    # never runs (it would fail because video formats need a GVS PO token).
+                    # The player API JSON — fetched during _real_extract — still populates
                     # automatic_captions with subtitle URLs.
                     info = ydl.extract_info(video_url, download=False, process=False)
         except Exception as e:

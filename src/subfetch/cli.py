@@ -921,22 +921,27 @@ def inspect_video(video: str, cookies: str, browser: str, output_json: bool):
     cookies_path = resolve_cookies(cookies)
     browser_source = resolve_cookies_from_browser(browser)
 
-    # Use download=False with the ios player client. The ios player API JSON is
-    # fetched during info extraction regardless of download mode, and it includes
-    # full caption track data — so automatic_captions will be populated without
-    # needing to go through format selection (which fails due to PO token).
+    # Use download=False with process=False: the player API JSON is fetched
+    # during info extraction and includes full caption track data, so
+    # automatic_captions is populated without going through format selection
+    # (which fails due to PO token). Client selection mirrors the extractor:
+    # cookie-less runs force ios (returns captions anonymously); with cookies
+    # the default clients are used, since ios doesn't support cookies and
+    # would be skipped, yielding an empty caption list.
     ydl_opts: dict = {
         'quiet': False,         # show yt-dlp progress/warnings for diagnosis
         'no_warnings': False,
         'ignoreerrors': True,
-        'extractor_args': {
-            'youtube': {'player_client': ['ios']},
-        },
+        'js_runtimes': {'deno': {}, 'node': {}},
     }
     if cookies_path and cookies_path.exists():
         ydl_opts['cookiefile'] = str(cookies_path)
     elif browser_source:
         ydl_opts['cookiesfrombrowser'] = (browser_source,)
+    else:
+        ydl_opts['extractor_args'] = {
+            'youtube': {'player_client': ['ios']},
+        }
 
     click.echo(f"Fetching metadata for: {url}")
     click.echo()
