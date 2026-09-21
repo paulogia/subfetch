@@ -8,8 +8,9 @@ version = "0.3.0"
 description = "YouTube subtitle extractor for channel archiving"
 requires-python = ">=3.9"
 dependencies = [
-    "yt-dlp[default]>=2026.7.4",
+    "yt-dlp[default]>=2026.8.19",
     "click>=8.0.0",
+    "bgutil-ytdlp-pot-provider>=1.3.1",
 ]
 
 [project.optional-dependencies]
