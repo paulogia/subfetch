@@ -28,9 +28,17 @@ UPCOMING_LIVE_ERROR = "Upcoming live event"
 _UPCOMING_PATTERNS = ('live event will begin', 'premieres in', 'premiere will begin')
 
 
+_AGE_GATE_PATTERNS = ('age-restricted', 'age restricted', 'confirm your age')
+
+
 def _is_upcoming_error(text: str) -> bool:
     text = text.lower()
     return any(p in text for p in _UPCOMING_PATTERNS)
+
+
+def _is_age_restricted(text: str) -> bool:
+    text = text.lower()
+    return any(p in text for p in _AGE_GATE_PATTERNS)
 
 
 def _is_translated(track_list: list) -> bool:
@@ -175,6 +183,32 @@ class SubtitleExtractor:
             }
         return ydl_opts
 
+    def _extract_info(self, video_url: str, ydl_opts: dict) -> tuple[Optional[dict], str]:
+        """Run info extraction, returning the info dict and yt-dlp's stderr.
+
+        stderr is always captured, even in debug mode: with ignoreerrors=True
+        yt-dlp reports why a video failed there and then returns None, and
+        extract() needs that text to tell an age gate from any other failure.
+
+        process=False skips process_ie_result entirely, so format selection
+        never runs — it would fail because video formats need a GVS PO token.
+        The player API JSON fetched during _real_extract still populates
+        automatic_captions with subtitle URLs.
+        """
+        buffer = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(buffer):
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(video_url, download=False, process=False)
+        except Exception as e:
+            buffer.write(f"\n{type(e).__name__}: {e}")
+            info = None
+
+        captured = buffer.getvalue()
+        if DEBUG and captured:
+            print(captured, file=sys.stderr, end='')
+        return info, captured
+
     def extract(self, video_url: str) -> SubtitleResult:
         """
         Extract English subtitles for a single video.
@@ -197,35 +231,29 @@ class SubtitleExtractor:
         - With cookies: use yt-dlp's default clients. The ios client must NOT
           be forced here — it does not support cookies, so yt-dlp skips it and
           returns an empty caption list, mislabeling videos as "no subtitles".
+          Age-gated videos then get one retry on the mweb client.
         """
         if self.output_dir is None:
             raise ValueError("output_dir must be set before extraction")
 
         _UNKNOWN = VideoInfo(video_id="unknown", title="", url=video_url)
         ydl_opts = self._build_ydl_opts()
+        info, captured = self._extract_info(video_url, ydl_opts)
 
-        try:
-            stderr_target = sys.stderr if DEBUG else io.StringIO()
-            with contextlib.redirect_stderr(stderr_target):
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    # process=False: skip process_ie_result entirely, so format selection
-                    # never runs (it would fail because video formats need a GVS PO token).
-                    # The player API JSON — fetched during _real_extract — still populates
-                    # automatic_captions with subtitle URLs.
-                    info = ydl.extract_info(video_url, download=False, process=False)
-        except Exception as e:
+        if info is None and self._has_cookies and _is_age_restricted(captured):
+            # YouTube's default web client refuses age-gated videos unless the
+            # signed-in account is age-verified. The mobile web client accepts
+            # the same cookies and still returns caption data, so retry there.
+            # Only on an age gate: listing mweb for every video costs an extra
+            # player API round trip each time.
             if DEBUG:
-                print(f"DEBUG: Exception for {video_url}: {type(e).__name__}: {e}", file=sys.stderr)
-            if _is_upcoming_error(str(e)):
-                return SubtitleResult(video=_UNKNOWN, success=False, error=UPCOMING_LIVE_ERROR)
-            return SubtitleResult(video=_UNKNOWN, success=False, error="Failed to extract video info")
+                print(f"DEBUG: age gate for {video_url}, retrying with mweb", file=sys.stderr)
+            ydl_opts = {**ydl_opts, 'extractor_args': {'youtube': {'player_client': ['mweb']}}}
+            info, captured = self._extract_info(video_url, ydl_opts)
 
         if info is None:
-            # With ignoreerrors=True, yt-dlp reports the error to stderr and
-            # returns None; recover the message from the captured stream.
-            captured = stderr_target.getvalue() if isinstance(stderr_target, io.StringIO) else ''
             if DEBUG:
-                print(f"DEBUG: yt-dlp returned None for {video_url}", file=sys.stderr)
+                print(f"DEBUG: no info for {video_url}", file=sys.stderr)
             if _is_upcoming_error(captured):
                 return SubtitleResult(video=_UNKNOWN, success=False, error=UPCOMING_LIVE_ERROR)
             return SubtitleResult(video=_UNKNOWN, success=False, error="Failed to extract video info")
