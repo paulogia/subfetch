@@ -33,6 +33,15 @@ def _is_upcoming_error(text: str) -> bool:
     return any(p in text for p in _UPCOMING_PATTERNS)
 
 
+def _is_translated(track_list: list) -> bool:
+    """Return True if a caption track list holds machine translations.
+
+    YouTube marks translated timedtext URLs with a tlang parameter. Requests
+    for them are rate limited far more aggressively than the original track.
+    """
+    return all('tlang=' in (track.get('url') or '') for track in track_list) if track_list else False
+
+
 def _ms_to_srt_time(ms: int) -> str:
     h = ms // 3_600_000
     ms %= 3_600_000
@@ -103,7 +112,8 @@ class SubtitleExtractor:
 
         Checks preferred variants first, then falls back to any key starting
         with 'en' (e.g. en-x-autogen, en-Latn) sorted shortest-first.
-        'en-orig' is excluded here — it is handled separately as a translated fallback.
+        'en-orig' is excluded here — _select_best_subtitle handles it, since it
+        has to weigh it against a translated 'en' alias.
         """
         for lang in cls.ENGLISH_LANGS_PREFERRED:
             if lang in track_dict:
@@ -277,17 +287,19 @@ class SubtitleExtractor:
 
         # Prefer json3 (YouTube native, lossless), then vtt, then anything
         preferred = ('json3', 'vtt', 'srv3', 'srv2', 'srv1', 'ttml')
+        # Within a language, an untranslated track beats a tlang= one.
+        ordered = sorted(track_list, key=lambda t: 'tlang=' in (t.get('url') or ''))
         url = ext = None
         for pref in preferred:
-            for track in track_list:
+            for track in ordered:
                 if track.get('ext') == pref:
                     url, ext = track['url'], pref
                     break
             if url:
                 break
-        if url is None and track_list:
-            url = track_list[0]['url']
-            ext = track_list[0].get('ext', 'json3')
+        if url is None and ordered:
+            url = ordered[0]['url']
+            ext = ordered[0].get('ext', 'json3')
 
         try:
             stderr_target = sys.stderr if DEBUG else io.StringIO()
@@ -362,18 +374,28 @@ class SubtitleExtractor:
         # Priority 1: Uploaded English (any en* variant)
         lang = self._find_english_lang(subtitles)
         if lang is not None:
+            if _is_translated(subtitles[lang]) and 'en-orig' in subtitles:
+                return SubtitleType.UPLOADED, 'en-orig', False
             return SubtitleType.UPLOADED, lang, False
 
-        # Priority 2: Auto-generated English (any en* variant)
+        # Priority 2: Auto-generated English (any en* variant).
+        # On videos carrying more than one audio track, YouTube exposes the
+        # original English ASR as 'en-orig' and additionally offers 'en' as an
+        # English-to-English machine translation (tlang=en). The timedtext API
+        # answers those redundant translation requests with HTTP 429, so prefer
+        # the untranslated track whenever both are listed.
         lang = self._find_english_lang(automatic_captions)
         if lang is not None:
+            if _is_translated(automatic_captions[lang]) and 'en-orig' in automatic_captions:
+                return SubtitleType.AUTO_GENERATED, 'en-orig', True
             return SubtitleType.AUTO_GENERATED, lang, True
 
-        # Priority 3: 'en-orig' indicates translated captions
+        # Priority 3: 'en-orig' alone — the original English ASR of a
+        # multi-audio video, with no plain 'en' alias listed.
         if 'en-orig' in automatic_captions:
-            return SubtitleType.TRANSLATED, 'en-orig', True
+            return SubtitleType.AUTO_GENERATED, 'en-orig', True
         if 'en-orig' in subtitles:
-            return SubtitleType.TRANSLATED, 'en-orig', False
+            return SubtitleType.UPLOADED, 'en-orig', False
 
         return None, None, False
 
